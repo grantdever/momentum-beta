@@ -12,6 +12,7 @@ import {
   saveLastOpen,
 } from './store.js';
 import { daySummary } from './streaks.js';
+import { activeCoresOn } from './habits.js';
 import { mergeEntries } from './merge.js';
 import { parseImport, countUpdated } from './importer.js';
 import { renderAll, renderSyncStatus } from './render.js';
@@ -23,20 +24,9 @@ import {
   setRemoteUpdateListener,
 } from './sync.js';
 
-const HABIT_FIELDS = [
-  'trained',
-  'alcoholFree',
-  'cookedAtHome',
-  'sleptOnTime',
-  'workSprint',
-  'walked',
-  'bonusReading',
-  'bonusNoGaming',
-];
-
-function createEmptyEntry(date) {
+function createEmptyEntry(date, habits) {
   const entry = { date, note: '', offDay: false, updatedAt: new Date().toISOString() };
-  for (const field of HABIT_FIELDS) entry[field] = false;
+  for (const habit of habits) entry[habit.id] = false;
   return entry;
 }
 
@@ -72,7 +62,7 @@ function init() {
   function getOrCreate(date) {
     const existing = state.entries[date];
     if (existing) return existing;
-    const fresh = createEmptyEntry(date);
+    const fresh = createEmptyEntry(date, state.settings.habits);
     state.entries[date] = fresh;
     return fresh;
   }
@@ -182,7 +172,7 @@ function init() {
     const today = todayISO();
     if (loadLastOpen() === today) return;
     saveLastOpen(today);
-    const y = daySummary(state.entries, addDays(today, -1));
+    const y = daySummary(state.entries, state.settings.habits, addDays(today, -1));
     if (!y.logged) return;
     const ribbon = document.getElementById('morning-ribbon');
     if (!ribbon) return;
@@ -355,12 +345,19 @@ function init() {
 
   function readSettingsFromForm() {
     const settings = state.settings;
+    // "Core threshold" still shows/edits the concrete "N of 5" number (D3);
+    // convert it back to coreSlack against today's active core count. A
+    // slack-based editor replaces this bridge in stage 3.
     const thresholdVal = Number(document.getElementById('set-threshold').value);
-    if (thresholdVal) settings.coreThreshold = thresholdVal;
+    if (thresholdVal) {
+      const activeCoreCount = activeCoresOn(settings.habits, todayISO()).length;
+      settings.coreSlack = Math.max(0, activeCoreCount - thresholdVal);
+    }
     const sleepVal = document.getElementById('set-sleep').value;
     if (sleepVal) settings.sleepTargetTime = sleepVal;
     const gymVal = Number(document.getElementById('set-gym').value);
-    if (gymVal) settings.gymTargetPerWeek = gymVal;
+    const trainedHabit = settings.habits.find((h) => h.id === 'trained');
+    if (gymVal && trainedHabit) trainedHabit.weeklyTarget = gymVal;
     settings.github.enabled = document.getElementById('gh-enabled').checked;
     settings.github.owner = document.getElementById('gh-owner').value.trim();
     settings.github.repo = document.getElementById('gh-repo').value.trim();

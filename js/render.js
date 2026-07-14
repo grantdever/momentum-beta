@@ -5,24 +5,13 @@
 import { todayISO, addDays, weekStart } from './dates.js';
 import {
   dailyStreak,
-  weeklyTrainingStreak,
-  weekProgress,
+  weeklyQuotaStreak,
+  weeklyQuotaProgress,
   cumulativeStats,
   historyWeeks,
   habitCounts,
-  ALL_HABITS,
 } from './streaks.js';
-
-const HABIT_DISPLAY = {
-  trained: 'Trained',
-  alcoholFree: 'Alcohol-free',
-  cookedAtHome: 'Cooked',
-  sleptOnTime: 'Asleep on time',
-  workSprint: 'One deep block',
-  walked: 'Walked',
-  bonusReading: 'Read',
-  bonusNoGaming: 'No gaming',
-};
+import { effectiveThreshold } from './habits.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -78,9 +67,9 @@ function renderStreakBlock(state, todayIso) {
   const dotsEl = document.getElementById('week-dots');
   if (!streakEl || !trainingEl || !dotsEl) return;
 
-  const threshold = state.settings.coreThreshold;
-  const streak = dailyStreak(state.entries, threshold, todayIso);
-  const stats = cumulativeStats(state.entries, threshold, todayIso);
+  const { habits, coreSlack } = state.settings;
+  const streak = dailyStreak(state.entries, habits, coreSlack, todayIso);
+  const stats = cumulativeStats(state.entries, habits, coreSlack, todayIso);
 
   const captionEl = streakEl.parentElement?.querySelector('.streak-caption');
   streakEl.textContent = String(streak);
@@ -93,10 +82,11 @@ function renderStreakBlock(state, todayIso) {
         : 'day core streak';
   }
 
-  const trainingStreak = weeklyTrainingStreak(state.entries, state.settings.gymTargetPerWeek, todayIso);
+  const trainedHabit = habits.find((h) => h.id === 'trained');
+  const trainingStreak = weeklyQuotaStreak(state.entries, trainedHabit, todayIso);
   trainingEl.textContent = String(trainingStreak);
 
-  const progress = weekProgress(state.entries, todayIso);
+  const progress = weeklyQuotaProgress(state.entries, trainedHabit, todayIso);
   dotsEl.innerHTML = '';
   const monday = weekStart(todayIso);
   for (let i = 0; i < 7; i++) {
@@ -111,7 +101,7 @@ function renderStreakBlock(state, todayIso) {
 
   const countEl = document.getElementById('week-count');
   if (countEl) {
-    const target = state.settings.gymTargetPerWeek;
+    const target = trainedHabit.weeklyTarget;
     const remaining = target - progress.count;
     // "To-go" framing once past halfway pulls harder late in the week.
     countEl.textContent =
@@ -121,7 +111,7 @@ function renderStreakBlock(state, todayIso) {
   }
 }
 
-function renderHabitRows(state) {
+function renderHabitRows(state, todayIso) {
   const entry = state.entries[state.activeDate];
   const habitList = document.getElementById('habit-list');
   const bonusSection = document.getElementById('bonus-section');
@@ -142,10 +132,17 @@ function renderHabitRows(state) {
     sleepLabel.textContent = `Asleep by ${formatTime12h(state.settings.sleepTargetTime)} (last night)`;
   }
 
+  const trainedHabit = state.settings.habits.find((h) => h.id === 'trained');
   const weeklyLabel = document.getElementById('weekly-label');
-  if (weeklyLabel) weeklyLabel.textContent = `Weekly — ${state.settings.gymTargetPerWeek}×`;
+  if (weeklyLabel) weeklyLabel.textContent = `Weekly — ${trainedHabit.weeklyTarget}×`;
   const dailyLabel = document.getElementById('daily-label');
-  if (dailyLabel) dailyLabel.textContent = `Daily — ${state.settings.coreThreshold} of 5`;
+  if (dailyLabel) {
+    const threshold = effectiveThreshold(state.settings.habits, state.settings.coreSlack, todayIso);
+    // threshold is null only when zero cores are active today [R1]; adaptive
+    // display / hiding the card entirely is stage 3 — this is a minimal,
+    // non-crashing fallback until then.
+    dailyLabel.textContent = threshold === null ? 'Daily —' : `Daily — ${threshold} of 5`;
+  }
 
   const offdayChip = document.getElementById('offday-chip');
   if (offdayChip) offdayChip.hidden = !entry?.offDay;
@@ -172,7 +169,7 @@ function renderDaySelector(state, todayIso) {
 function renderCumulativeStats(state, todayIso) {
   const el = document.getElementById('cumulative-stats');
   if (!el) return;
-  const stats = cumulativeStats(state.entries, state.settings.coreThreshold, todayIso);
+  const stats = cumulativeStats(state.entries, state.settings.habits, state.settings.coreSlack, todayIso);
   el.innerHTML = '';
   const items = [
     { value: stats.totalLogged, label: 'Days logged' },
@@ -200,7 +197,7 @@ function renderCumulativeStats(state, todayIso) {
 export function renderToday(state) {
   const todayIso = todayISO();
   renderStreakBlock(state, todayIso);
-  renderHabitRows(state);
+  renderHabitRows(state, todayIso);
   renderDaySelector(state, todayIso);
   renderCumulativeStats(state, todayIso);
 }
@@ -209,7 +206,7 @@ export function renderHistory(state) {
   const grid = document.getElementById('history-grid');
   if (!grid) return;
   const todayIso = todayISO();
-  const weeks = historyWeeks(state.entries, state.settings.coreThreshold, todayIso);
+  const weeks = historyWeeks(state.entries, state.settings.habits, todayIso);
   grid.innerHTML = '';
 
   // Column-major grid: first column is weekday labels, then one column per
@@ -253,20 +250,21 @@ export function renderHistory(state) {
 function renderHabitCounts(state) {
   const el = document.getElementById('habit-counts');
   if (!el) return;
-  const counts = habitCounts(state.entries);
+  const habits = state.settings.habits;
+  const counts = habitCounts(state.entries, habits);
   el.innerHTML = '';
   // Canonical order, plain counts — deliberately never ranked or judged.
-  for (const habit of ALL_HABITS) {
+  for (const habit of habits) {
     const row = document.createElement('div');
     row.className = 'habit-count-row';
-    if (habit === 'bonusReading' || habit === 'bonusNoGaming') {
+    if (habit.cadence === 'bonus') {
       row.classList.add('bonus');
     }
     const label = document.createElement('span');
-    label.textContent = HABIT_DISPLAY[habit];
+    label.textContent = habit.label;
     const value = document.createElement('span');
     value.className = 'habit-count-value';
-    value.textContent = `${counts[habit]} days`;
+    value.textContent = `${counts[habit.id]} days`;
     row.appendChild(label);
     row.appendChild(value);
     el.appendChild(row);
@@ -275,6 +273,8 @@ function renderHabitCounts(state) {
 
 export function renderSettingsForm(state) {
   const settings = state.settings;
+  const todayIso = todayISO();
+  const trainedHabit = settings.habits.find((h) => h.id === 'trained');
   const thresholdEl = document.getElementById('set-threshold');
   const sleepEl = document.getElementById('set-sleep');
   const gymEl = document.getElementById('set-gym');
@@ -286,9 +286,14 @@ export function renderSettingsForm(state) {
 
   const holdEl = document.getElementById('set-hold');
   if (holdEl) holdEl.checked = !!settings.holdToComplete;
-  if (thresholdEl && document.activeElement !== thresholdEl) thresholdEl.value = settings.coreThreshold;
+  if (thresholdEl && document.activeElement !== thresholdEl) {
+    // This field still shows/edits the concrete "N of 5" number; under the
+    // hood it maps to coreSlack via today's active core count (D3). The
+    // slack-based editor is stage 3.
+    thresholdEl.value = effectiveThreshold(settings.habits, settings.coreSlack, todayIso);
+  }
   if (sleepEl && document.activeElement !== sleepEl) sleepEl.value = settings.sleepTargetTime;
-  if (gymEl && document.activeElement !== gymEl) gymEl.value = settings.gymTargetPerWeek;
+  if (gymEl && document.activeElement !== gymEl) gymEl.value = trainedHabit.weeklyTarget;
   if (ghEnabledEl) ghEnabledEl.checked = !!settings.github.enabled;
   if (ghOwnerEl && document.activeElement !== ghOwnerEl) ghOwnerEl.value = settings.github.owner || '';
   if (ghRepoEl && document.activeElement !== ghRepoEl) ghRepoEl.value = settings.github.repo || '';

@@ -1,18 +1,28 @@
 import assert from 'node:assert/strict';
 import { todayISO, addDays, weekStart } from '../js/dates.js';
 import {
-  CORE_HABITS,
-  ALL_HABITS,
   coreCount,
   dailyStreak,
-  weeklyTrainingStreak,
-  weekProgress,
+  weeklyQuotaStreak,
+  weeklyQuotaProgress,
   cumulativeStats,
   historyGrid,
   historyWeeks,
   habitCounts,
   daySummary,
 } from '../js/streaks.js';
+import {
+  defaultHabits,
+  LEGACY_CORE_HABITS,
+  RESERVED_KEYS,
+  activeHabitsOn,
+  activeCoresOn,
+  effectiveThreshold,
+  archiveHabit,
+  unarchiveHabit,
+  generateHabitId,
+} from '../js/habits.js';
+import { migrateSettings, defaultSettings } from '../js/migrate.js';
 import { mergeEntries } from '../js/merge.js';
 import { DEFAULT_SETTINGS, exportString } from '../js/store.js';
 import { parseImport, countUpdated } from '../js/importer.js';
@@ -29,6 +39,19 @@ function t(name, fn) {
     console.error(`FAIL: ${name}`);
     console.error(err && err.message ? err.message : err);
   }
+}
+
+// `defaultMigratedConfig` fixture [R12]: the 8 legacy habits (5 daily-core,
+// weekly-quota `trained` at 3, 2 bonus), all open since the beginning, with
+// coreSlack 1 — the exact shape migrateSettings produces from a v1 install.
+// A fresh copy every call so no test can leak mutation into another.
+function freshHabits() {
+  return defaultHabits();
+}
+const CORE_SLACK = 1; // 5 legacy cores - slack 1 = threshold 4, matching every pre-existing test's `threshold: 4`.
+
+function trainedHabit(habits) {
+  return habits.find((h) => h.id === 'trained');
 }
 
 // Fixture helper: full Entry with all-false defaults.
@@ -101,17 +124,239 @@ t('weekStart weekday spot-checks (Tue..Sat all map to same Monday)', () => {
   assert.equal(weekStart('2026-07-11'), '2026-07-06'); // Sat
 });
 
+// ---------- habits.js: defaults, effective dating, id generation ----------
+
+t('defaultHabits: 8 legacy habits, 5 daily-core, trained weekly x3, all open', () => {
+  const habits = freshHabits();
+  assert.equal(habits.length, 8);
+  const cores = habits.filter((h) => h.cadence === 'daily-core');
+  assert.equal(cores.length, 5);
+  assert.deepEqual(
+    cores.map((h) => h.id).sort(),
+    [...LEGACY_CORE_HABITS].sort()
+  );
+  const trained = trainedHabit(habits);
+  assert.equal(trained.cadence, 'weekly-quota');
+  assert.equal(trained.weeklyTarget, 3);
+  for (const h of habits) assert.deepEqual(h.active, [{ from: null, to: null }]);
+});
+
+t('activeCoresOn: only currently-active daily-core habits count', () => {
+  const habits = freshHabits();
+  const cores = activeCoresOn(habits, '2026-07-12');
+  assert.equal(cores.length, 5);
+  assert.ok(cores.every((h) => h.cadence === 'daily-core'));
+});
+
+t('effectiveThreshold: max(1, activeCores - slack)', () => {
+  const habits = freshHabits();
+  assert.equal(effectiveThreshold(habits, 1, '2026-07-12'), 4);
+  assert.equal(effectiveThreshold(habits, 0, '2026-07-12'), 5);
+});
+
+t('effectiveThreshold: slack greater than active core count clamps to 1, never below', () => {
+  const habits = freshHabits();
+  assert.equal(effectiveThreshold(habits, 10, '2026-07-12'), 1);
+});
+
+t('effectiveThreshold: zero active cores returns null [R1], not an unreachable number', () => {
+  const habits = freshHabits().map((h) => (h.cadence === 'daily-core' ? archiveHabit(h, '2026-07-01') : h));
+  assert.equal(effectiveThreshold(habits, 1, '2026-07-01'), null);
+});
+
+t('archiveHabit / unarchiveHabit: archive closes the open interval, unarchive appends a fresh one', () => {
+  let habit = freshHabits().find((h) => h.id === 'walked');
+  habit = archiveHabit(habit, '2026-07-10');
+  assert.deepEqual(habit.active, [{ from: null, to: '2026-07-10' }]);
+  habit = unarchiveHabit(habit, '2026-07-15');
+  assert.deepEqual(habit.active, [
+    { from: null, to: '2026-07-10' },
+    { from: '2026-07-15', to: null },
+  ]);
+});
+
+t('archiveHabit: is a no-op if already archived', () => {
+  let habit = freshHabits().find((h) => h.id === 'walked');
+  habit = archiveHabit(habit, '2026-07-10');
+  const archivedAgain = archiveHabit(habit, '2026-07-20');
+  assert.deepEqual(archivedAgain.active, habit.active);
+});
+
+t('effective dating: archive -> unarchive leaves the gap inactive forever', () => {
+  let habit = freshHabits().find((h) => h.id === 'walked');
+  habit = archiveHabit(habit, '2026-07-10');
+  habit = unarchiveHabit(habit, '2026-07-15');
+  assert.equal(activeHabitsOn([habit], '2026-07-09').length, 1);
+  assert.equal(activeHabitsOn([habit], '2026-07-10').length, 0);
+  assert.equal(activeHabitsOn([habit], '2026-07-12').length, 0); // the gap
+  assert.equal(activeHabitsOn([habit], '2026-07-15').length, 1);
+});
+
+t('effective dating: an archived core leaves the denominator lower starting the next day', () => {
+  let habits = freshHabits();
+  habits = habits.map((h) => (h.id === 'walked' ? archiveHabit(h, '2026-07-10') : h));
+  assert.equal(activeCoresOn(habits, '2026-07-09').length, 5);
+  assert.equal(activeCoresOn(habits, '2026-07-10').length, 4);
+});
+
+t('effective dating: habit added mid-history does not break earlier days’ streak', () => {
+  const habits = [
+    ...freshHabits(),
+    { id: 'newCore', label: 'New Core', cadence: 'daily-core', active: [{ from: '2026-07-10', to: null }] },
+  ];
+  const slack = 0; // threshold == active core count that day, to make the effect visible
+  const entries = {
+    '2026-07-08': hitEntry('2026-07-08'), // only the 5 legacy cores are active; all 5 true
+    '2026-07-09': hitEntry('2026-07-09'),
+    '2026-07-10': hitEntry('2026-07-10', { newCore: true }), // 6 cores active from today; all 6 true
+  };
+  assert.equal(dailyStreak(entries, habits, slack, '2026-07-10'), 3);
+});
+
+t('effective dating: zero active cores on a day acts like an off-day (streak survives)', () => {
+  const habits = freshHabits().map((h) => (h.cadence === 'daily-core' ? archiveHabit(h, '2026-07-11') : h));
+  const entries = {
+    '2026-07-09': hitEntry('2026-07-09'),
+    '2026-07-10': hitEntry('2026-07-10'),
+    '2026-07-11': e('2026-07-11'), // zero active cores today: rests, doesn't count, doesn't break
+  };
+  assert.equal(dailyStreak(entries, habits, 1, '2026-07-11'), 2);
+});
+
+t('effective dating: weekly habit added mid-history is not credited for weeks before its start [R9]', () => {
+  const habit = {
+    id: 'newWeekly',
+    label: 'New Weekly',
+    cadence: 'weekly-quota',
+    weeklyTarget: 2,
+    active: [{ from: '2026-07-06', to: null }],
+  };
+  const entries = {
+    // Stray data in weeks before the habit existed that would coincidentally
+    // satisfy quota if the walk weren't bounded by the habit's first `from`.
+    '2026-06-29': e('2026-06-29', { newWeekly: true }),
+    '2026-06-30': e('2026-06-30', { newWeekly: true }), // W-1: 2/2, but pre-dates the habit
+    '2026-07-06': e('2026-07-06', { newWeekly: true }),
+    '2026-07-07': e('2026-07-07', { newWeekly: true }), // W0: 2/2
+  };
+  assert.equal(weeklyQuotaStreak(entries, habit, '2026-07-08'), 1);
+});
+
+t('generateHabitId: camelCase slug of a fresh label', () => {
+  assert.equal(generateHabitId('Cold plunge', []), 'coldPlunge');
+});
+
+t('generateHabitId: slug collision gets a numeric suffix', () => {
+  const habits = [{ id: 'reading', label: 'Reading', cadence: 'bonus', active: [] }];
+  assert.equal(generateHabitId('Reading', habits), 'reading2');
+});
+
+t('generateHabitId: dedupes against archived ids, never reissues one [R5]', () => {
+  const archivedReading = [
+    { id: 'bonusReading', label: 'Bonus Reading', cadence: 'bonus', active: [{ from: null, to: '2026-01-01' }] },
+  ];
+  // Slug collides with the archived habit's id -> must get a fresh suffix,
+  // never grafting new history onto the retired habit's id.
+  assert.equal(generateHabitId('Bonus Reading', archivedReading), 'bonusReading2');
+});
+
+t('generateHabitId: rejects all 5 reserved keys [R4]', () => {
+  for (const key of RESERVED_KEYS) {
+    const id = generateHabitId(key, []);
+    assert.notEqual(id, key);
+  }
+});
+
+// ---------- migrate.js ----------
+
+t('migrateSettings: v1 fixture migrates to the v2 shape', () => {
+  const v1 = {
+    coreThreshold: 4,
+    sleepTargetTime: '23:00',
+    gymTargetPerWeek: 4,
+    weekStartsOn: 'sunday',
+    holdToComplete: true,
+    github: { enabled: true, owner: 'someone', repo: 'somewhere', path: 'data.json', token: 'x' },
+  };
+  const { settings, migrated } = migrateSettings(v1);
+  assert.equal(migrated, true);
+  assert.equal(settings.schemaVersion, 2);
+  assert.equal(settings.habits.length, 8);
+  assert.equal(settings.coreSlack, 1); // LEGACY_CORE_HABITS.length(5) - 4
+  assert.equal(trainedHabit(settings.habits).weeklyTarget, 4);
+  assert.equal(settings.weekStartsOn, 'sunday');
+  assert.equal(settings.sleepTargetTime, '23:00');
+  assert.equal(settings.holdToComplete, true);
+  assert.deepEqual(settings.github, v1.github);
+  for (const h of settings.habits) assert.deepEqual(h.active, [{ from: null, to: null }]);
+});
+
+t('migrateSettings: coreSlack formula uses LEGACY_CORE_HABITS.length, not a magic 5 [R11]', () => {
+  const { settings } = migrateSettings({ coreThreshold: 2 });
+  assert.equal(settings.coreSlack, LEGACY_CORE_HABITS.length - 2);
+});
+
+t('migrateSettings: corrupt coreThreshold falls back to its default, never NaN', () => {
+  const { settings } = migrateSettings({ coreThreshold: 'banana' });
+  assert.ok(Number.isFinite(settings.coreSlack));
+  assert.equal(settings.coreSlack, LEGACY_CORE_HABITS.length - 4); // 4 is the v1 default threshold
+});
+
+t('migrateSettings: idempotent on v2 input', () => {
+  const first = migrateSettings({});
+  const second = migrateSettings(first.settings);
+  assert.equal(second.migrated, false);
+  assert.deepEqual(second.settings, first.settings);
+});
+
+t('migrateSettings: garbage (non-object) input falls back to total defaults', () => {
+  const { settings, migrated } = migrateSettings('banana');
+  assert.equal(migrated, true);
+  assert.deepEqual(settings, defaultSettings());
+});
+
+t('migrateSettings: null input falls back to total defaults', () => {
+  const { settings, migrated } = migrateSettings(null);
+  assert.equal(migrated, true);
+  assert.equal(settings.schemaVersion, 2);
+});
+
+t('migrateSettings: preserves unknown keys', () => {
+  const { settings } = migrateSettings({ someFutureField: 'kept' });
+  assert.equal(settings.someFutureField, 'kept');
+});
+
+t('migrateSettings: v2 input with a corrupt enum field falls back per-field, not wholesale', () => {
+  const v2 = { ...defaultSettings(), weekStartsOn: 'tuesday' };
+  const { settings, migrated } = migrateSettings(v2);
+  assert.equal(settings.weekStartsOn, 'monday');
+  assert.equal(migrated, true);
+});
+
+t('migrateSettings: v2 input with a garbage habits array falls back to defaults', () => {
+  const v2 = { ...defaultSettings(), habits: 'nope' };
+  const { settings } = migrateSettings(v2);
+  assert.equal(settings.habits.length, 8);
+});
+
+t('migrateSettings: never touches entries (no entries key in its signature or output)', () => {
+  const { settings } = migrateSettings({ coreThreshold: 4 });
+  assert.ok(!('entries' in settings));
+});
+
 // ---------- streaks.js: coreCount ----------
 
 t('coreCount excludes trained', () => {
+  const habits = freshHabits();
   const entry = hitEntry('2026-07-12', { trained: true });
-  assert.equal(coreCount(entry), 5);
-  assert.ok(!CORE_HABITS.includes('trained'));
+  assert.equal(coreCount(entry, habits, '2026-07-12'), 5);
+  assert.ok(!LEGACY_CORE_HABITS.includes('trained'));
 });
 
 t('coreCount counts partial core hits', () => {
+  const habits = freshHabits();
   const entry = e('2026-07-12', { alcoholFree: true, cookedAtHome: true, sleptOnTime: true });
-  assert.equal(coreCount(entry), 3);
+  assert.equal(coreCount(entry, habits, '2026-07-12'), 3);
 });
 
 // ---------- streaks.js: dailyStreak ----------
@@ -122,7 +367,7 @@ t('dailyStreak: today unlogged + 3-day prior chain -> 3 (grace)', () => {
     '2026-07-10': hitEntry('2026-07-10'),
     '2026-07-11': hitEntry('2026-07-11'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 3);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 3);
 });
 
 t('dailyStreak: today logged & hit adds +1 to prior chain', () => {
@@ -132,7 +377,7 @@ t('dailyStreak: today logged & hit adds +1 to prior chain', () => {
     '2026-07-11': hitEntry('2026-07-11'),
     '2026-07-12': hitEntry('2026-07-12'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 4);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 4);
 });
 
 t('dailyStreak: today logged below threshold neither counts nor breaks', () => {
@@ -142,7 +387,7 @@ t('dailyStreak: today logged below threshold neither counts nor breaks', () => {
     '2026-07-11': hitEntry('2026-07-11'),
     '2026-07-12': e('2026-07-12', { alcoholFree: true, cookedAtHome: true }), // count=2
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 3);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 3);
 });
 
 t('dailyStreak: yesterday missing breaks chain (today grace still counts)', () => {
@@ -150,7 +395,7 @@ t('dailyStreak: yesterday missing breaks chain (today grace still counts)', () =
     '2026-07-10': hitEntry('2026-07-10'),
     '2026-07-12': hitEntry('2026-07-12'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 1);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 1);
 });
 
 t('dailyStreak: backfilling yesterday repairs the chain', () => {
@@ -159,7 +404,7 @@ t('dailyStreak: backfilling yesterday repairs the chain', () => {
     '2026-07-11': hitEntry('2026-07-11'),
     '2026-07-12': hitEntry('2026-07-12'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 3);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 3);
 });
 
 t('dailyStreak: off-day bridge (hit, off, off, hit) spans to streak 2', () => {
@@ -169,7 +414,7 @@ t('dailyStreak: off-day bridge (hit, off, off, hit) spans to streak 2', () => {
     '2026-07-10': e('2026-07-10', { offDay: true }),
     '2026-07-11': hitEntry('2026-07-11'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 2);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 2);
 });
 
 t('dailyStreak: all off days -> 0', () => {
@@ -178,7 +423,7 @@ t('dailyStreak: all off days -> 0', () => {
     '2026-07-10': e('2026-07-10', { offDay: true }),
     '2026-07-11': e('2026-07-11', { offDay: true }),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 0);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 0);
 });
 
 t('dailyStreak: logged-but-missed past day breaks the chain', () => {
@@ -187,16 +432,16 @@ t('dailyStreak: logged-but-missed past day breaks the chain', () => {
     '2026-07-10': e('2026-07-10', { alcoholFree: true }), // count=1, below threshold
     '2026-07-11': hitEntry('2026-07-11'),
   };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 1);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 1);
 });
 
 t('dailyStreak: empty entries -> 0', () => {
-  assert.equal(dailyStreak({}, 4, '2026-07-12'), 0);
+  assert.equal(dailyStreak({}, freshHabits(), CORE_SLACK, '2026-07-12'), 0);
 });
 
 t('dailyStreak: first-ever day logged & hit -> 1', () => {
   const entries = { '2026-07-12': hitEntry('2026-07-12') };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 1);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 1);
 });
 
 t('dailyStreak: threshold respected - exactly 4 of 5 passes at threshold 4', () => {
@@ -207,7 +452,7 @@ t('dailyStreak: threshold respected - exactly 4 of 5 passes at threshold 4', () 
     workSprint: true,
   });
   const entries = { '2026-07-11': entry, '2026-07-12': hitEntry('2026-07-12') };
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 2);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 2);
 });
 
 t('dailyStreak: threshold respected - 3 of 5 fails at threshold 4', () => {
@@ -218,13 +463,13 @@ t('dailyStreak: threshold respected - 3 of 5 fails at threshold 4', () => {
   });
   const entries = { '2026-07-11': entry, '2026-07-12': hitEntry('2026-07-12') };
   // today hits -> +1; yesterday (3/5) is below threshold -> breaks.
-  assert.equal(dailyStreak(entries, 4, '2026-07-12'), 1);
+  assert.equal(dailyStreak(entries, freshHabits(), CORE_SLACK, '2026-07-12'), 1);
 });
 
-// ---------- streaks.js: weeklyTrainingStreak ----------
+// ---------- streaks.js: weeklyQuotaStreak (was weeklyTrainingStreak) ----------
 // Weeks (Mon-Sun): W0 = 07-06..07-12, W-1 = 06-29..07-05, W-2 = 06-22..06-28, W-3 = 06-15..06-21
 
-t('weeklyTrainingStreak: in-progress week under quota does not break prior streak', () => {
+t('weeklyQuotaStreak: in-progress week under quota does not break prior streak', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true }), // W0: 1/3, in progress
     '2026-06-29': e('2026-06-29', { trained: true }),
@@ -235,10 +480,10 @@ t('weeklyTrainingStreak: in-progress week under quota does not break prior strea
     '2026-06-24': e('2026-06-24', { trained: true }), // W-2: 3/3
     '2026-06-15': e('2026-06-15', { trained: true }), // W-3: 1/3, completed -> breaks
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-08'), 2);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-08'), 2);
 });
 
-t('weeklyTrainingStreak: in-progress week at quota adds to streak', () => {
+t('weeklyQuotaStreak: in-progress week at quota adds to streak', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true }),
     '2026-07-07': e('2026-07-07', { trained: true }),
@@ -250,56 +495,56 @@ t('weeklyTrainingStreak: in-progress week at quota adds to streak', () => {
     '2026-06-23': e('2026-06-23', { trained: true }),
     '2026-06-24': e('2026-06-24', { trained: true }), // W-2: 3/3
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-08'), 3);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-08'), 3);
 });
 
-t('weeklyTrainingStreak: completed week below quota breaks', () => {
+t('weeklyQuotaStreak: completed week below quota breaks', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true }),
     '2026-07-07': e('2026-07-07', { trained: true }),
     '2026-07-08': e('2026-07-08', { trained: true }), // W0: 3/3
     '2026-06-29': e('2026-06-29', { trained: true }), // W-1: 1/3, completed -> breaks
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-08'), 1);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-08'), 1);
 });
 
-t('weeklyTrainingStreak: completed week with zero entries breaks', () => {
+t('weeklyQuotaStreak: completed week with zero entries breaks', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true }),
     '2026-07-07': e('2026-07-07', { trained: true }),
     '2026-07-08': e('2026-07-08', { trained: true }), // W0: 3/3
     '2026-06-15': e('2026-06-15', { trained: true }), // W-3 has an entry so earliest reaches back, W-1/W-2 empty
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-08'), 1);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-08'), 1);
 });
 
-t('weeklyTrainingStreak: trained on an off day still counts toward quota', () => {
+t('weeklyQuotaStreak: trained on an off day still counts toward quota', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true, offDay: true }),
     '2026-07-07': e('2026-07-07', { trained: true, offDay: true }),
     '2026-07-08': e('2026-07-08', { trained: true, offDay: true }),
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-08'), 1);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-08'), 1);
 });
 
-t('weeklyTrainingStreak: week boundary - Sunday belongs to its own week, not the next Monday', () => {
+t('weeklyQuotaStreak: week boundary - Sunday belongs to its own week, not the next Monday', () => {
   const entries = {
     '2026-07-12': e('2026-07-12', { trained: true }), // Sunday of W0
     '2026-07-06': e('2026-07-06', { trained: true }),
     '2026-07-07': e('2026-07-07', { trained: true }), // W0 total 3/3 incl. Sunday
     '2026-07-13': e('2026-07-13', { trained: true }), // next Monday, W+1, not counted for W0
   };
-  assert.equal(weeklyTrainingStreak(entries, 3, '2026-07-12'), 1);
+  assert.equal(weeklyQuotaStreak(entries, trainedHabit(freshHabits()), '2026-07-12'), 1);
 });
 
-// ---------- streaks.js: weekProgress ----------
+// ---------- streaks.js: weeklyQuotaProgress (was weekProgress) ----------
 
-t('weekProgress: correct count and Mon..Sun boolean placement', () => {
+t('weeklyQuotaProgress: correct count and Mon..Sun boolean placement', () => {
   const entries = {
     '2026-07-06': e('2026-07-06', { trained: true }), // Mon
     '2026-07-09': e('2026-07-09', { trained: true }), // Thu
   };
-  const result = weekProgress(entries, '2026-07-08'); // Wed, same week
+  const result = weeklyQuotaProgress(entries, trainedHabit(freshHabits()), '2026-07-08'); // Wed, same week
   assert.equal(result.count, 2);
   assert.deepEqual(result.days, [true, false, false, true, false, false, false]);
 });
@@ -315,7 +560,7 @@ t('cumulativeStats: bestStreak survives off-days and resets on a gap', () => {
     // gap at 07-05 -> run resets
     '2026-07-06': hitEntry('2026-07-06'),
   };
-  const stats = cumulativeStats(entries, 4, '2026-07-06');
+  const stats = cumulativeStats(entries, freshHabits(), CORE_SLACK, '2026-07-06');
   assert.equal(stats.bestStreak, 3);
 });
 
@@ -325,7 +570,7 @@ t('cumulativeStats: totals correct', () => {
     '2026-07-02': e('2026-07-02', { alcoholFree: true }), // below threshold
     '2026-07-03': e('2026-07-03', { offDay: true }),
   };
-  const stats = cumulativeStats(entries, 4, '2026-07-03');
+  const stats = cumulativeStats(entries, freshHabits(), CORE_SLACK, '2026-07-03');
   assert.equal(stats.totalLogged, 3);
   assert.equal(stats.totalCoreHit, 1);
   assert.equal(stats.totalTrained, 1);
@@ -338,7 +583,7 @@ t('historyGrid: length n, oldest-first, correct flags', () => {
     '2026-07-10': hitEntry('2026-07-10', { trained: true }),
     '2026-07-11': e('2026-07-11', { offDay: true }),
   };
-  const grid = historyGrid(entries, 4, '2026-07-12', 5);
+  const grid = historyGrid(entries, freshHabits(), '2026-07-12', 5);
   assert.equal(grid.length, 5);
   assert.equal(grid[0].date, '2026-07-08');
   assert.equal(grid[4].date, '2026-07-12');
@@ -437,7 +682,7 @@ t('cumulativeStats: offDayCount counts off days', () => {
     '2026-07-02': hit('2026-07-02'),
     '2026-07-03': e('2026-07-03', { offDay: true }),
   };
-  assert.equal(cumulativeStats(entries, 4, '2026-07-03').offDayCount, 2);
+  assert.equal(cumulativeStats(entries, freshHabits(), CORE_SLACK, '2026-07-03').offDayCount, 2);
 });
 
 t('cumulativeStats: last30Hit counts threshold days in trailing 30-day window', () => {
@@ -447,7 +692,7 @@ t('cumulativeStats: last30Hit counts threshold days in trailing 30-day window', 
     '2026-07-05': e('2026-07-05'),                    // logged, below threshold
     '2026-07-03': hit('2026-07-03', { offDay: true }), // off day never hits
   };
-  assert.equal(cumulativeStats(entries, 4, '2026-07-12').last30Hit, 2);
+  assert.equal(cumulativeStats(entries, freshHabits(), CORE_SLACK, '2026-07-12').last30Hit, 2);
 });
 
 t('cumulativeStats: last30Hit window boundary — day 29 back counts, day 30 back does not', () => {
@@ -456,12 +701,12 @@ t('cumulativeStats: last30Hit window boundary — day 29 back counts, day 30 bac
     [addDays(today, -29)]: hit(addDays(today, -29)),
     [addDays(today, -30)]: hit(addDays(today, -30)),
   };
-  assert.equal(cumulativeStats(entries, 4, today).last30Hit, 1);
+  assert.equal(cumulativeStats(entries, freshHabits(), CORE_SLACK, today).last30Hit, 1);
 });
 
 t('historyWeeks: 5 weeks, Monday-aligned, oldest first, ends with current week', () => {
   const today = '2026-07-12'; // a Sunday; week is Mon 2026-07-06 .. Sun 2026-07-12
-  const wk = historyWeeks({}, 4, today);
+  const wk = historyWeeks({}, freshHabits(), today);
   assert.equal(wk.length, 5);
   assert.equal(wk[4].monday, '2026-07-06');
   assert.equal(wk[0].monday, '2026-06-08');
@@ -474,7 +719,7 @@ t('historyWeeks: 5 weeks, Monday-aligned, oldest first, ends with current week',
 
 t('historyWeeks: future flags only after today within current week', () => {
   const today = '2026-07-08'; // Wednesday; Thu-Sun of current week are future
-  const wk = historyWeeks({}, 4, today);
+  const wk = historyWeeks({}, freshHabits(), today);
   const current = wk[4];
   assert.deepEqual(current.days.map((d) => d.future),
     [false, false, false, true, true, true, true]);
@@ -486,7 +731,7 @@ t('historyWeeks: cell flags for logged/off/trained and month-boundary dates', ()
     '2026-06-30': hit('2026-06-30', { trained: true }),
     '2026-07-01': e('2026-07-01', { offDay: true }),
   };
-  const wk = historyWeeks(entries, 4, '2026-07-12');
+  const wk = historyWeeks(entries, freshHabits(), '2026-07-12');
   const flat = wk.flatMap((w) => w.days);
   const juneCell = flat.find((d) => d.date === '2026-06-30');
   const julyCell = flat.find((d) => d.date === '2026-07-01');
@@ -499,9 +744,10 @@ t('historyWeeks: cell flags for logged/off/trained and month-boundary dates', ()
 // --- per-habit counts ------------------------------------------------------
 
 t('habitCounts: empty entries -> all zeros for all 8 habits', () => {
-  const counts = habitCounts({});
-  assert.equal(Object.keys(counts).length, ALL_HABITS.length);
-  for (const h of ALL_HABITS) assert.equal(counts[h], 0);
+  const habits = freshHabits();
+  const counts = habitCounts({}, habits);
+  assert.equal(Object.keys(counts).length, habits.length);
+  for (const h of habits) assert.equal(counts[h.id], 0);
 });
 
 t('habitCounts: counts true fields across entries', () => {
@@ -510,7 +756,7 @@ t('habitCounts: counts true fields across entries', () => {
     '2026-07-02': e('2026-07-02', { walked: true, bonusReading: true }),
     '2026-07-03': e('2026-07-03', { alcoholFree: true }),
   };
-  const counts = habitCounts(entries);
+  const counts = habitCounts(entries, freshHabits());
   assert.equal(counts.walked, 2);
   assert.equal(counts.trained, 1);
   assert.equal(counts.bonusReading, 1);
@@ -522,7 +768,7 @@ t('habitCounts: off-day entries still counted (descriptive, not judged)', () => 
   const entries = {
     '2026-07-01': e('2026-07-01', { walked: true, offDay: true }),
   };
-  assert.equal(habitCounts(entries).walked, 1);
+  assert.equal(habitCounts(entries, freshHabits()).walked, 1);
 });
 
 // --- morning ribbon summary ------------------------------------------------
@@ -531,7 +777,7 @@ t('daySummary: logged day reports count, trained, offDay', () => {
   const entries = {
     '2026-07-11': hitEntry('2026-07-11', { trained: true }),
   };
-  const s = daySummary(entries, '2026-07-11');
+  const s = daySummary(entries, freshHabits(), '2026-07-11');
   assert.deepEqual(s, { logged: true, count: 5, trained: true, offDay: false });
 });
 
@@ -539,21 +785,23 @@ t('daySummary: off day reported as off with its count', () => {
   const entries = {
     '2026-07-11': e('2026-07-11', { offDay: true, walked: true }),
   };
-  const s = daySummary(entries, '2026-07-11');
+  const s = daySummary(entries, freshHabits(), '2026-07-11');
   assert.ok(s.logged && s.offDay);
   assert.equal(s.count, 1);
 });
 
 t('daySummary: unlogged day -> logged false, zeros', () => {
-  const s = daySummary({}, '2026-07-11');
+  const s = daySummary({}, freshHabits(), '2026-07-11');
   assert.deepEqual(s, { logged: false, count: 0, trained: false, offDay: false });
 });
 
-// --- hold-to-complete setting ----------------------------------------------
+// --- settings v2 defaults ----------------------------------------------
 
-t('DEFAULT_SETTINGS: holdToComplete defaults off; existing defaults intact', () => {
+t('DEFAULT_SETTINGS: v2 shape with sane defaults; holdToComplete off', () => {
+  assert.equal(DEFAULT_SETTINGS.schemaVersion, 2);
+  assert.equal(DEFAULT_SETTINGS.coreSlack, 1);
+  assert.equal(DEFAULT_SETTINGS.habits.length, 8);
   assert.equal(DEFAULT_SETTINGS.holdToComplete, false);
-  assert.equal(DEFAULT_SETTINGS.coreThreshold, 4);
   assert.equal(DEFAULT_SETTINGS.github.enabled, false);
 });
 

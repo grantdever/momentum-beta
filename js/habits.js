@@ -1,0 +1,93 @@
+// Pure habit-config helpers: defaults, effective-dating, id generation.
+// No side effects, no I/O.
+
+// Entry keys that a habit id must never collide with (see schema-design.md D1).
+// `frozen` is reserved for a future scheduled-days cadence, cost-free today.
+export const RESERVED_KEYS = ['date', 'offDay', 'note', 'updatedAt', 'frozen'];
+
+// The 5 daily-core habit ids from v1, in their historic order. Used only by
+// the coreThreshold -> coreSlack migration formula (see migrate.js).
+export const LEGACY_CORE_HABITS = ['alcoholFree', 'cookedAtHome', 'sleptOnTime', 'workSprint', 'walked'];
+
+function openInterval() {
+  return [{ from: null, to: null }];
+}
+
+// The 8 legacy habits, each open since the beginning. This is now the single
+// source of truth for ids/labels/cadences (labels used to live in render.js's
+// HABIT_DISPLAY). Returns a fresh deep copy every call so callers can safely
+// mutate the result.
+export function defaultHabits() {
+  return [
+    { id: 'trained', label: 'Trained', cadence: 'weekly-quota', weeklyTarget: 3, active: openInterval() },
+    { id: 'alcoholFree', label: 'Alcohol-free', cadence: 'daily-core', active: openInterval() },
+    { id: 'cookedAtHome', label: 'Cooked', cadence: 'daily-core', active: openInterval() },
+    { id: 'sleptOnTime', label: 'Asleep on time', cadence: 'daily-core', active: openInterval() },
+    { id: 'workSprint', label: 'One deep block', cadence: 'daily-core', active: openInterval() },
+    { id: 'walked', label: 'Walked', cadence: 'daily-core', active: openInterval() },
+    { id: 'bonusReading', label: 'Read', cadence: 'bonus', active: openInterval() },
+    { id: 'bonusNoGaming', label: 'No gaming', cadence: 'bonus', active: openInterval() },
+  ];
+}
+
+function isActiveOn(habit, dateIso) {
+  return habit.active.some(({ from, to }) => (from === null || dateIso >= from) && (to === null || dateIso < to));
+}
+
+export function activeHabitsOn(habits, dateIso) {
+  return habits.filter((h) => isActiveOn(h, dateIso));
+}
+
+export function activeCoresOn(habits, dateIso) {
+  return habits.filter((h) => h.cadence === 'daily-core' && isActiveOn(h, dateIso));
+}
+
+// Effective daily threshold for a given day: max(1, activeCoreCount - slack),
+// or null if zero cores are active that day [R1] — callers must treat null
+// as "not evaluated" (off-day semantics), never as an unreachable threshold.
+export function effectiveThreshold(habits, coreSlack, dateIso) {
+  const activeCores = activeCoresOn(habits, dateIso);
+  if (activeCores.length === 0) return null;
+  return Math.max(1, activeCores.length - coreSlack);
+}
+
+// Archive closes the currently-open interval at dateIso (to is exclusive).
+// No-op if the habit is already archived.
+export function archiveHabit(habit, dateIso) {
+  const last = habit.active[habit.active.length - 1];
+  if (!last || last.to !== null) return habit;
+  const active = habit.active.slice(0, -1).concat([{ from: last.from, to: dateIso }]);
+  return { ...habit, active };
+}
+
+// Unarchive appends a fresh open interval starting at dateIso. The archived
+// gap is never retroactively reopened.
+export function unarchiveHabit(habit, dateIso) {
+  return { ...habit, active: [...habit.active, { from: dateIso, to: null }] };
+}
+
+function slugify(label) {
+  const words = String(label)
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return 'habit';
+  return words
+    .map((w, i) =>
+      i === 0 ? w.charAt(0).toLowerCase() + w.slice(1) : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+    )
+    .join('');
+}
+
+// camelCase slug of the label, deduped with a numeric suffix against the
+// reserved-key blocklist and the full historical id set (active + archived
+// habits alike, per [R4][R5]) — `habits` should be the complete stored array.
+export function generateHabitId(label, habits) {
+  const taken = new Set([...RESERVED_KEYS, ...habits.map((h) => h.id)]);
+  const base = slugify(label);
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}${n}`)) n++;
+  return `${base}${n}`;
+}
