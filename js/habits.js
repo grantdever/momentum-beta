@@ -66,6 +66,38 @@ export function unarchiveHabit(habit, dateIso) {
   return { ...habit, active: [...habit.active, { from: dateIso, to: null }] };
 }
 
+// Editor/validation clamps. Both return null for non-numeric garbage so
+// callers can fall back to their own default; finite values are treated as
+// intent and clamped into range.
+export function clampSlack(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
+export function clampWeeklyTarget(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.min(7, Math.max(1, Math.trunc(value)));
+}
+
+// Swap a habit with its nearest neighbor of the same cadence that is active
+// on dateIso (delta -1 = up, +1 = down). Archived habits and other cadences
+// are skipped over, so reordering stays within the displayed group. Returns
+// a new array; the input is never mutated. No-op at group boundaries.
+export function moveHabit(habits, id, delta, dateIso) {
+  const idx = habits.findIndex((h) => h.id === id);
+  if (idx === -1) return habits;
+  const cadence = habits[idx].cadence;
+  let j = idx + delta;
+  while (j >= 0 && j < habits.length) {
+    if (habits[j].cadence === cadence && isActiveOn(habits[j], dateIso)) break;
+    j += delta;
+  }
+  if (j < 0 || j >= habits.length) return habits;
+  const out = habits.slice();
+  [out[idx], out[j]] = [out[j], out[idx]];
+  return out;
+}
+
 function slugify(label) {
   const words = String(label)
     .replace(/[^A-Za-z0-9]+/g, ' ')

@@ -308,12 +308,31 @@ export function renderToday(state) {
   renderCumulativeStats(state, todayIso);
 }
 
+// Legend/tooltip name for the weekly-done dot: the habit's own label while
+// exactly one weekly-quota habit exists (the default config keeps reading
+// "Trained"), generic "Weekly" once there are several.
+function weeklyMarkerLabel(habits, todayIso) {
+  const weekly = activeWeeklyHabits(habits, todayIso);
+  return weekly.length === 1 ? weekly[0].label : 'Weekly';
+}
+
 export function renderHistory(state) {
   const grid = document.getElementById('history-grid');
   if (!grid) return;
   const todayIso = todayISO();
   const weeks = historyWeeks(state.entries, state.settings.habits, todayIso);
   grid.innerHTML = '';
+
+  const markerLabel = weeklyMarkerLabel(state.settings.habits, todayIso);
+  const markerWord = markerLabel.toLowerCase();
+  const hasWeekly = activeWeeklyHabits(state.settings.habits, todayIso).length > 0;
+  const legendSwatch = document.getElementById('legend-weekly-swatch');
+  const legendLabel = document.getElementById('legend-weekly-label');
+  if (legendSwatch) legendSwatch.hidden = !hasWeekly;
+  if (legendLabel) {
+    legendLabel.hidden = !hasWeekly;
+    legendLabel.textContent = markerLabel;
+  }
 
   // Column-major grid: first column is weekday labels, then one column per
   // week (Mon..Sun top to bottom), so weekly rhythm reads across a row.
@@ -336,11 +355,11 @@ export function renderHistory(state) {
       const intensity = cell.logged ? intensityLevel(cell.count, cell.coreTotal) : 0;
       div.className = `cell i${intensity}`;
       if (cell.offDay) div.classList.add('off');
-      if (cell.trained) div.classList.add('trained');
+      if (cell.weeklyDone) div.classList.add('trained');
       const parts = [
         cell.logged ? `${cell.count} of ${cell.coreTotal}` : 'not logged',
         cell.offDay ? 'off day' : '',
-        cell.trained ? 'trained' : '',
+        cell.weeklyDone ? markerWord : '',
       ].filter(Boolean);
       const detail = `${monthDay(cell.date)}: ${parts.join(', ')}`;
       div.dataset.detail = detail;
@@ -377,35 +396,172 @@ function renderHabitCounts(state) {
   }
 }
 
+const CADENCE_TAGS = {
+  'daily-core': 'daily',
+  'weekly-quota': 'weekly',
+  bonus: 'bonus',
+};
+
+function buildEditorRow(habit, openIds) {
+  const row = document.createElement('details');
+  row.className = 'editor-row';
+  row.dataset.habitId = habit.id;
+  if (openIds.has(habit.id)) row.open = true;
+
+  const summary = document.createElement('summary');
+  const name = document.createElement('span');
+  name.className = 'editor-row-name';
+  name.textContent = habit.label;
+  const tag = document.createElement('span');
+  tag.className = 'editor-row-tag';
+  tag.textContent = CADENCE_TAGS[habit.cadence];
+  summary.appendChild(name);
+  summary.appendChild(tag);
+  row.appendChild(summary);
+
+  const body = document.createElement('div');
+  body.className = 'editor-row-body';
+
+  const labelField = document.createElement('label');
+  labelField.className = 'editor-field';
+  labelField.textContent = 'Label';
+  const labelInput = document.createElement('input');
+  labelInput.type = 'text';
+  labelInput.dataset.field = 'label';
+  labelInput.value = habit.label;
+  labelInput.autocomplete = 'off';
+  labelField.appendChild(labelInput);
+  body.appendChild(labelField);
+
+  if (habit.cadence === 'weekly-quota') {
+    const targetField = document.createElement('label');
+    targetField.className = 'editor-field';
+    targetField.textContent = 'Days per week';
+    const targetInput = document.createElement('input');
+    targetInput.type = 'number';
+    targetInput.dataset.field = 'weeklyTarget';
+    targetInput.min = '1';
+    targetInput.max = '7';
+    targetInput.step = '1';
+    targetInput.value = habit.weeklyTarget;
+    targetField.appendChild(targetInput);
+    body.appendChild(targetField);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'editor-actions';
+  for (const [action, text, ariaLabel] of [
+    ['up', '↑', 'Move up'],
+    ['down', '↓', 'Move down'],
+    ['archive', 'Archive', ''],
+  ]) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.action = action;
+    btn.textContent = text;
+    if (ariaLabel) btn.setAttribute('aria-label', ariaLabel);
+    actions.appendChild(btn);
+  }
+  body.appendChild(actions);
+
+  const caption = document.createElement('p');
+  caption.className = 'setting-caption';
+  caption.textContent = 'Archiving keeps its history — you can bring it back anytime.';
+  body.appendChild(caption);
+
+  row.appendChild(body);
+  return row;
+}
+
+function buildArchivedRow(habit) {
+  const row = document.createElement('div');
+  row.className = 'archived-row';
+  row.dataset.habitId = habit.id;
+  const name = document.createElement('span');
+  name.className = 'editor-row-name';
+  name.textContent = habit.label;
+  const tag = document.createElement('span');
+  tag.className = 'editor-row-tag';
+  tag.textContent = CADENCE_TAGS[habit.cadence];
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.dataset.action = 'unarchive';
+  btn.textContent = 'Unarchive';
+  row.appendChild(name);
+  row.appendChild(tag);
+  row.appendChild(btn);
+  return row;
+}
+
+// Same rebuild-on-change discipline as the Today card rows: the list DOM is
+// rebuilt only when the config actually changed, and expanded rows stay
+// expanded across rebuilds.
+let editorSig = null;
+
+function renderHabitEditor(state, todayIso) {
+  const listEl = document.getElementById('habit-editor-list');
+  const archivedEl = document.getElementById('archived-list');
+  if (!listEl || !archivedEl) return;
+
+  const settings = state.settings;
+  const activeIds = new Set(activeHabitsOn(settings.habits, todayIso).map((h) => h.id));
+
+  const coreTotal = activeCoresOn(settings.habits, todayIso).length;
+  const threshold = effectiveThreshold(settings.habits, settings.coreSlack, todayIso);
+  const note = document.getElementById('daily-goal-note');
+  if (note) {
+    note.textContent =
+      threshold === null
+        ? 'No core habits active — the daily streak is paused.'
+        : `Daily goal: ${threshold} of ${coreTotal} core habits.`;
+  }
+  const slackEl = document.getElementById('set-slack');
+  if (slackEl) {
+    slackEl.max = Math.max(0, coreTotal - 1);
+    if (document.activeElement !== slackEl) slackEl.value = settings.coreSlack;
+  }
+
+  const sig = JSON.stringify(
+    settings.habits.map((h) => [h.id, h.label, h.cadence, h.weeklyTarget ?? null, activeIds.has(h.id)])
+  );
+  if (sig === editorSig) return;
+  editorSig = sig;
+
+  const openIds = new Set(
+    [...listEl.querySelectorAll('details[open]')].map((d) => d.dataset.habitId)
+  );
+
+  // Active rows grouped like the Today card (weekly, core, bonus), array
+  // order within each group; archived rows in plain array order.
+  listEl.innerHTML = '';
+  const active = settings.habits.filter((h) => activeIds.has(h.id));
+  for (const cadence of ['weekly-quota', 'daily-core', 'bonus']) {
+    for (const habit of active.filter((h) => h.cadence === cadence)) {
+      listEl.appendChild(buildEditorRow(habit, openIds));
+    }
+  }
+
+  archivedEl.innerHTML = '';
+  for (const habit of settings.habits.filter((h) => !activeIds.has(h.id))) {
+    archivedEl.appendChild(buildArchivedRow(habit));
+  }
+}
+
 export function renderSettingsForm(state) {
   const settings = state.settings;
   const todayIso = todayISO();
-  const trainedHabit = settings.habits.find((h) => h.id === 'trained');
-  const thresholdEl = document.getElementById('set-threshold');
   const sleepEl = document.getElementById('set-sleep');
-  const gymEl = document.getElementById('set-gym');
   const ghEnabledEl = document.getElementById('gh-enabled');
   const ghOwnerEl = document.getElementById('gh-owner');
   const ghRepoEl = document.getElementById('gh-repo');
   const ghPathEl = document.getElementById('gh-path');
   const ghTokenEl = document.getElementById('gh-token');
 
+  renderHabitEditor(state, todayIso);
+
   const holdEl = document.getElementById('set-hold');
   if (holdEl) holdEl.checked = !!settings.holdToComplete;
-  // This field still shows/edits the concrete "N of M" number; under the
-  // hood it maps to coreSlack via today's active core count (D3). The
-  // slack-based editor is stage 3.
-  const coreTotal = activeCoresOn(settings.habits, todayIso).length;
-  const thresholdLabelEl = document.querySelector('label[for="set-threshold"]');
-  if (thresholdLabelEl) thresholdLabelEl.textContent = `Core threshold (of ${coreTotal} daily habits)`;
-  if (thresholdEl) {
-    thresholdEl.max = Math.max(1, coreTotal);
-    if (document.activeElement !== thresholdEl) {
-      thresholdEl.value = effectiveThreshold(settings.habits, settings.coreSlack, todayIso) ?? '';
-    }
-  }
   if (sleepEl && document.activeElement !== sleepEl) sleepEl.value = settings.sleepTargetTime;
-  if (gymEl && trainedHabit && document.activeElement !== gymEl) gymEl.value = trainedHabit.weeklyTarget;
   if (ghEnabledEl) ghEnabledEl.checked = !!settings.github.enabled;
   if (ghOwnerEl && document.activeElement !== ghOwnerEl) ghOwnerEl.value = settings.github.owner || '';
   if (ghRepoEl && document.activeElement !== ghRepoEl) ghRepoEl.value = settings.github.repo || '';

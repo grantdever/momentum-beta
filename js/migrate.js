@@ -1,7 +1,7 @@
 // Settings migration: v1 (flat, unversioned) -> v2 (schemaVersion, habits[],
 // coreSlack). Pure, total, and idempotent — see schema-design.md D6.
 
-import { defaultHabits, LEGACY_CORE_HABITS } from './habits.js';
+import { defaultHabits, LEGACY_CORE_HABITS, clampSlack, clampWeeklyTarget } from './habits.js';
 
 const ALLOWED_WEEK_STARTS = ['monday', 'sunday', 'saturday'];
 const ALLOWED_CADENCES = ['daily-core', 'weekly-quota', 'bonus'];
@@ -93,7 +93,7 @@ function validateHabit(h) {
     active: active.length > 0 ? active : [{ from: null, to: null }],
   };
   if (h.cadence === 'weekly-quota') {
-    habit.weeklyTarget = Number.isFinite(h.weeklyTarget) && h.weeklyTarget > 0 ? h.weeklyTarget : 3;
+    habit.weeklyTarget = clampWeeklyTarget(h.weeklyTarget) ?? 3;
   }
   return habit;
 }
@@ -117,13 +117,10 @@ function validateHabitsArray(rawHabits) {
 // 5 [R11]) and gymTargetPerWeek -> trained.weeklyTarget.
 function migrateFromV1(raw, defaults) {
   const legacyCoreThreshold = Number.isFinite(raw.coreThreshold) ? raw.coreThreshold : 4;
-  const coreSlack = Math.max(0, LEGACY_CORE_HABITS.length - legacyCoreThreshold);
+  const coreSlack = clampSlack(LEGACY_CORE_HABITS.length - legacyCoreThreshold) ?? 1;
 
   const defaultTrained = defaults.habits.find((h) => h.id === 'trained');
-  const gymTarget =
-    Number.isFinite(raw.gymTargetPerWeek) && raw.gymTargetPerWeek > 0
-      ? raw.gymTargetPerWeek
-      : defaultTrained.weeklyTarget;
+  const gymTarget = clampWeeklyTarget(raw.gymTargetPerWeek) ?? defaultTrained.weeklyTarget;
 
   const habits = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: gymTarget } : h));
 
@@ -148,7 +145,7 @@ function revalidateV2(raw, defaults) {
     ...unknownKeys(raw),
     schemaVersion: 2,
     habits: validateHabitsArray(raw.habits),
-    coreSlack: Number.isFinite(raw.coreSlack) ? raw.coreSlack : defaults.coreSlack,
+    coreSlack: clampSlack(raw.coreSlack) ?? defaults.coreSlack,
     weekStartsOn: ALLOWED_WEEK_STARTS.includes(raw.weekStartsOn) ? raw.weekStartsOn : defaults.weekStartsOn,
     sleepTargetTime:
       typeof raw.sleepTargetTime === 'string' && raw.sleepTargetTime ? raw.sleepTargetTime : defaults.sleepTargetTime,

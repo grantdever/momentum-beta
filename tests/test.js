@@ -11,6 +11,7 @@ import {
   habitCounts,
   daySummary,
   intensityLevel,
+  weeklyDoneOn,
 } from '../js/streaks.js';
 import {
   defaultHabits,
@@ -22,6 +23,9 @@ import {
   archiveHabit,
   unarchiveHabit,
   generateHabitId,
+  clampSlack,
+  clampWeeklyTarget,
+  moveHabit,
 } from '../js/habits.js';
 import { migrateSettings, defaultSettings } from '../js/migrate.js';
 import { mergeEntries } from '../js/merge.js';
@@ -596,7 +600,7 @@ t('historyGrid: length n, oldest-first, correct flags', () => {
   const hitDay = grid.find((d) => d.date === '2026-07-10');
   assert.equal(hitDay.logged, true);
   assert.equal(hitDay.count, 5);
-  assert.equal(hitDay.trained, true);
+  assert.equal(hitDay.weeklyDone, true);
   assert.equal(hitDay.offDay, false);
 
   const offDayEntry = grid.find((d) => d.date === '2026-07-11');
@@ -727,7 +731,7 @@ t('historyWeeks: future flags only after today within current week', () => {
   assert.ok(wk[3].days.every((d) => !d.future));
 });
 
-t('historyWeeks: cell flags for logged/off/trained and month-boundary dates', () => {
+t('historyWeeks: cell flags for logged/off/weeklyDone and month-boundary dates', () => {
   const entries = {
     '2026-06-30': hit('2026-06-30', { trained: true }),
     '2026-07-01': e('2026-07-01', { offDay: true }),
@@ -736,8 +740,8 @@ t('historyWeeks: cell flags for logged/off/trained and month-boundary dates', ()
   const flat = wk.flatMap((w) => w.days);
   const juneCell = flat.find((d) => d.date === '2026-06-30');
   const julyCell = flat.find((d) => d.date === '2026-07-01');
-  assert.ok(juneCell.logged && juneCell.trained && juneCell.count === 4);
-  assert.ok(julyCell.logged && julyCell.offDay && !julyCell.trained);
+  assert.ok(juneCell.logged && juneCell.weeklyDone && juneCell.count === 4);
+  assert.ok(julyCell.logged && julyCell.offDay && !julyCell.weeklyDone);
   const unlogged = flat.find((d) => d.date === '2026-07-02');
   assert.ok(!unlogged.logged && unlogged.count === 0);
 });
@@ -843,6 +847,99 @@ t('historyWeeks: cells carry coreTotal (default config -> 5 everywhere)', () => 
   for (const w of wk) {
     for (const d of w.days) assert.equal(d.coreTotal, 5);
   }
+});
+
+// --- stage 3: clamps, reorder, any-weekly dot --------------------------------
+
+t('clampSlack: integers >= 0; garbage -> null', () => {
+  assert.equal(clampSlack(-3), 0);
+  assert.equal(clampSlack(0), 0);
+  assert.equal(clampSlack(2.7), 2);
+  assert.equal(clampSlack(4), 4);
+  assert.equal(clampSlack(NaN), null);
+  assert.equal(clampSlack('banana'), null);
+  assert.equal(clampSlack(Infinity), null);
+});
+
+t('clampWeeklyTarget: integers 1-7; garbage -> null', () => {
+  assert.equal(clampWeeklyTarget(0), 1);
+  assert.equal(clampWeeklyTarget(-2), 1);
+  assert.equal(clampWeeklyTarget(3.9), 3);
+  assert.equal(clampWeeklyTarget(7), 7);
+  assert.equal(clampWeeklyTarget(99), 7);
+  assert.equal(clampWeeklyTarget(NaN), null);
+  assert.equal(clampWeeklyTarget('banana'), null);
+});
+
+t('migrateSettings: negative or fractional coreSlack on v2 input is clamped, not passed through', () => {
+  const negative = migrateSettings({ ...defaultSettings(), coreSlack: -3 });
+  assert.equal(negative.settings.coreSlack, 0);
+  assert.equal(negative.migrated, true);
+  const fractional = migrateSettings({ ...defaultSettings(), coreSlack: 2.5 });
+  assert.equal(fractional.settings.coreSlack, 2);
+});
+
+t('migrateSettings: out-of-range weeklyTarget on v2 habit is clamped to 1-7', () => {
+  const habits = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 99 } : h));
+  const { settings } = migrateSettings({ ...defaultSettings(), habits });
+  assert.equal(trainedHabit(settings.habits).weeklyTarget, 7);
+  const zeroed = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 0 } : h));
+  const clampedUp = migrateSettings({ ...defaultSettings(), habits: zeroed });
+  assert.equal(trainedHabit(clampedUp.settings.habits).weeklyTarget, 1);
+});
+
+t('migrateSettings: v1 gymTargetPerWeek out of range is clamped on fold-in', () => {
+  const { settings } = migrateSettings({ gymTargetPerWeek: 12 });
+  assert.equal(trainedHabit(settings.habits).weeklyTarget, 7);
+});
+
+t('moveHabit: swaps adjacent habits of the same cadence', () => {
+  const habits = freshHabits();
+  const moved = moveHabit(habits, 'cookedAtHome', -1, '2026-07-14');
+  const ids = moved.filter((h) => h.cadence === 'daily-core').map((h) => h.id);
+  assert.deepEqual(ids, ['cookedAtHome', 'alcoholFree', 'sleptOnTime', 'workSprint', 'walked']);
+});
+
+t('moveHabit: no-op at the top or bottom of a cadence group', () => {
+  const habits = freshHabits();
+  assert.deepEqual(moveHabit(habits, 'alcoholFree', -1, '2026-07-14'), habits);
+  assert.deepEqual(moveHabit(habits, 'walked', 1, '2026-07-14'), habits);
+  // trained is the only weekly habit: nowhere to go in either direction.
+  assert.deepEqual(moveHabit(habits, 'trained', 1, '2026-07-14'), habits);
+});
+
+t('moveHabit: skips over other cadences and archived same-cadence habits', () => {
+  const habits = freshHabits().map((h) => (h.id === 'cookedAtHome' ? archiveHabit(h, '2026-07-01') : h));
+  // sleptOnTime moving up must land above alcoholFree, hopping the archived
+  // cookedAtHome (and never pairing with the weekly `trained` above it).
+  const moved = moveHabit(habits, 'sleptOnTime', -1, '2026-07-14');
+  const ids = moved.map((h) => h.id);
+  assert.deepEqual(ids.slice(0, 4), ['trained', 'sleptOnTime', 'cookedAtHome', 'alcoholFree']);
+});
+
+t('moveHabit: unknown id -> same array; input never mutated', () => {
+  const habits = freshHabits();
+  const snapshot = JSON.parse(JSON.stringify(habits));
+  assert.equal(moveHabit(habits, 'nope', 1, '2026-07-14'), habits);
+  moveHabit(habits, 'cookedAtHome', -1, '2026-07-14');
+  assert.deepEqual(habits, snapshot);
+});
+
+t('weeklyDoneOn: true when any active weekly-quota habit was done that day', () => {
+  const habits = [
+    ...freshHabits(),
+    { id: 'meditated', label: 'Meditated', cadence: 'weekly-quota', weeklyTarget: 5, active: [{ from: null, to: null }] },
+  ];
+  assert.equal(weeklyDoneOn(e('2026-07-14', { trained: true }), habits, '2026-07-14'), true);
+  assert.equal(weeklyDoneOn(e('2026-07-14', { meditated: true }), habits, '2026-07-14'), true);
+  assert.equal(weeklyDoneOn(hitEntry('2026-07-14', { bonusReading: true }), habits, '2026-07-14'), false);
+  assert.equal(weeklyDoneOn(undefined, habits, '2026-07-14'), false);
+});
+
+t('weeklyDoneOn: a weekly habit archived before that day no longer marks it', () => {
+  const habits = freshHabits().map((h) => (h.id === 'trained' ? archiveHabit(h, '2026-07-10') : h));
+  assert.equal(weeklyDoneOn(e('2026-07-09', { trained: true }), habits, '2026-07-09'), true);
+  assert.equal(weeklyDoneOn(e('2026-07-10', { trained: true }), habits, '2026-07-10'), false);
 });
 
 // --- settings v2 defaults ----------------------------------------------

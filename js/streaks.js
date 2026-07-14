@@ -2,7 +2,7 @@
 // Config-driven: every function takes the `habits` array (+ `coreSlack`
 // where a daily threshold is judged) instead of hardcoded habit lists.
 import { addDays, weekStart } from './dates.js';
-import { activeCoresOn, effectiveThreshold } from './habits.js';
+import { activeHabitsOn, activeCoresOn, effectiveThreshold } from './habits.js';
 
 // Count of that day's active core habits hit on `entry` (raw, unjudged).
 export function coreCount(entry, habits, dateIso) {
@@ -205,6 +205,17 @@ export function daySummary(entries, habits, dateIso) {
   };
 }
 
+// True when any weekly-quota habit active on that day was done — drives the
+// history dot marker. With the default single `trained` habit this reduces
+// exactly to the old entry.trained check.
+export function weeklyDoneOn(entry, habits, dateIso) {
+  if (!entry) return false;
+  for (const h of activeHabitsOn(habits, dateIso)) {
+    if (h.cadence === 'weekly-quota' && entry[h.id] === true) return true;
+  }
+  return false;
+}
+
 // Maps a day's core hits onto the 6-step history color ramp (i0..i5) as a
 // ratio of that day's active core count, so intensity stays meaningful when
 // the denominator isn't 5. For a 5-core config this is the identity (k -> k).
@@ -228,7 +239,7 @@ export function historyWeeks(entries, habits, todayIso, weeks = 5) {
         count: e ? coreCount(e, habits, d) : 0,
         coreTotal: activeCoresOn(habits, d).length,
         offDay: !!e?.offDay,
-        trained: !!e?.trained,
+        weeklyDone: weeklyDoneOn(e, habits, d),
         future: d > todayIso,
       });
     }
@@ -249,7 +260,7 @@ export function historyGrid(entries, habits, todayIso, n = 30) {
       count: e ? coreCount(e, habits, d) : 0,
       coreTotal: activeCoresOn(habits, d).length,
       offDay: !!e?.offDay,
-      trained: !!e?.trained,
+      weeklyDone: weeklyDoneOn(e, habits, d),
     });
   }
   return grid;

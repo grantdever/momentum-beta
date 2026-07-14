@@ -12,7 +12,15 @@ import {
   saveLastOpen,
 } from './store.js';
 import { daySummary } from './streaks.js';
-import { activeCoresOn } from './habits.js';
+import {
+  activeCoresOn,
+  archiveHabit,
+  unarchiveHabit,
+  moveHabit,
+  generateHabitId,
+  clampSlack,
+  clampWeeklyTarget,
+} from './habits.js';
 import { mergeEntries } from './merge.js';
 import { parseImport, countUpdated } from './importer.js';
 import { renderAll, renderSyncStatus } from './render.js';
@@ -345,19 +353,8 @@ function init() {
 
   function readSettingsFromForm() {
     const settings = state.settings;
-    // "Core threshold" still shows/edits the concrete "N of M" number (D3);
-    // convert it back to coreSlack against today's active core count. A
-    // slack-based editor replaces this bridge in stage 3.
-    const thresholdVal = Number(document.getElementById('set-threshold').value);
-    if (thresholdVal) {
-      const activeCoreCount = activeCoresOn(settings.habits, todayISO()).length;
-      settings.coreSlack = Math.max(0, activeCoreCount - thresholdVal);
-    }
     const sleepVal = document.getElementById('set-sleep').value;
     if (sleepVal) settings.sleepTargetTime = sleepVal;
-    const gymVal = Number(document.getElementById('set-gym').value);
-    const trainedHabit = settings.habits.find((h) => h.id === 'trained');
-    if (gymVal && trainedHabit) trainedHabit.weeklyTarget = gymVal;
     settings.github.enabled = document.getElementById('gh-enabled').checked;
     settings.github.owner = document.getElementById('gh-owner').value.trim();
     settings.github.repo = document.getElementById('gh-repo').value.trim();
@@ -366,13 +363,119 @@ function init() {
     settings.holdToComplete = document.getElementById('set-hold').checked;
   }
 
-  document.getElementById('view-settings').addEventListener('change', () => {
+  document.getElementById('view-settings').addEventListener('change', (e) => {
+    // The habit editor owns its inputs; a whole-form read here must never
+    // run on their change events (it would clobber in-progress edit state).
+    if (e.target.closest('#habit-editor')) return;
     syncSuspended = false;
     readSettingsFromForm();
     saveSettings(state.settings);
     renderAll(state);
     if (state.settings.github.enabled && hasGithubCreds(state.settings.github)) {
       syncOnLoadOrResume();
+    }
+  });
+
+  function persistSettings() {
+    saveSettings(state.settings);
+    renderAll(state);
+  }
+
+  const editorEl = document.getElementById('habit-editor');
+
+  function addHabitFromForm() {
+    const labelInput = document.getElementById('add-habit-label');
+    const label = labelInput.value.trim();
+    if (!label) return;
+    const cadence = document.getElementById('add-habit-cadence').value;
+    const habit = {
+      id: generateHabitId(label, state.settings.habits),
+      label,
+      cadence,
+      active: [{ from: todayISO(), to: null }],
+    };
+    if (cadence === 'weekly-quota') {
+      habit.weeklyTarget = clampWeeklyTarget(numberOrNaN(document.getElementById('add-habit-target').value)) ?? 3;
+    }
+    state.settings.habits.push(habit);
+    labelInput.value = '';
+    persistSettings();
+  }
+
+  editorEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    if (action === 'add') {
+      addHabitFromForm();
+      return;
+    }
+    const row = btn.closest('[data-habit-id]');
+    if (!row) return;
+    const id = row.dataset.habitId;
+    const today = todayISO();
+    const settings = state.settings;
+    if (action === 'archive') {
+      settings.habits = settings.habits.map((h) => (h.id === id ? archiveHabit(h, today) : h));
+    } else if (action === 'unarchive') {
+      settings.habits = settings.habits.map((h) => (h.id === id ? unarchiveHabit(h, today) : h));
+    } else if (action === 'up') {
+      settings.habits = moveHabit(settings.habits, id, -1, today);
+    } else if (action === 'down') {
+      settings.habits = moveHabit(settings.habits, id, 1, today);
+    } else {
+      return;
+    }
+    persistSettings();
+  });
+
+  // Empty inputs parse as NaN, not 0, so clearing a field never silently
+  // means "zero" — it reads as invalid and the old value is restored.
+  function numberOrNaN(value) {
+    const s = String(value).trim();
+    return s === '' ? NaN : Number(s);
+  }
+
+  editorEl.addEventListener('change', (e) => {
+    const target = e.target;
+    if (target.id === 'set-slack') {
+      const slack = clampSlack(numberOrNaN(target.value));
+      if (slack !== null) {
+        // Cap so today's threshold stays >= 1 (typed values can exceed the
+        // input's max attribute).
+        const coreTotal = activeCoresOn(state.settings.habits, todayISO()).length;
+        state.settings.coreSlack = Math.min(slack, Math.max(0, coreTotal - 1));
+        persistSettings();
+      }
+      target.value = state.settings.coreSlack;
+      return;
+    }
+    if (target.id === 'add-habit-cadence') {
+      const weekly = target.value === 'weekly-quota';
+      document.getElementById('add-habit-target').hidden = !weekly;
+      document.getElementById('add-habit-target-label').hidden = !weekly;
+      return;
+    }
+    const row = target.closest('[data-habit-id]');
+    if (!row || !target.dataset.field) return;
+    const habit = state.settings.habits.find((h) => h.id === row.dataset.habitId);
+    if (!habit) return;
+    if (target.dataset.field === 'label') {
+      const label = target.value.trim();
+      if (label) {
+        habit.label = label; // renames touch only the label — the id is permanent
+        persistSettings();
+      } else {
+        target.value = habit.label; // empty rename: restore the current label
+      }
+    } else if (target.dataset.field === 'weeklyTarget') {
+      const targetVal = clampWeeklyTarget(numberOrNaN(target.value));
+      if (targetVal !== null) {
+        habit.weeklyTarget = targetVal;
+        persistSettings();
+      } else {
+        target.value = habit.weeklyTarget;
+      }
     }
   });
 

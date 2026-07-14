@@ -662,6 +662,136 @@ summary:focus-visible {
   margin: 0 0 4px;
 }
 
+.settings-group select {
+  min-height: 48px;
+  background: var(--bg-row);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  padding: 0 12px;
+  font-size: 16px;
+}
+
+/* ---------- Habit editor ---------- */
+
+.habit-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.editor-row {
+  background: var(--bg-row);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.editor-row summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 14px;
+  cursor: pointer;
+  list-style: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.editor-row summary::-webkit-details-marker {
+  display: none;
+}
+
+.editor-row-name {
+  font-size: 15px;
+}
+
+.editor-row-tag {
+  margin-left: auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+.editor-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 12px;
+}
+
+.editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.editor-actions button,
+.archived-row button {
+  min-height: 44px;
+  padding: 0 14px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.editor-actions button[data-action="archive"] {
+  flex: 1;
+}
+
+.editor-subsection summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.editor-subsection summary::-webkit-details-marker {
+  display: none;
+}
+
+.editor-subsection summary::before {
+  content: "\25B8  ";
+}
+
+.editor-subsection[open] summary::before {
+  content: "\25BE  ";
+}
+
+.archived-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 14px;
+  background: var(--bg-row);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-dim);
+}
+
 #export-btn,
 #import-btn {
   min-height: var(--tap-min);
