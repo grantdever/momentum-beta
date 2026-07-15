@@ -123,11 +123,13 @@ input[type="number"]::-webkit-outer-spin-button {
 
 /* ---------- Today header ---------- */
 
+/* The core streak is the hero: full-width card on top; weekly blocks stack
+   below it as visibly smaller cards. Weekly blocks are inserted by render.js
+   before #sync-status, so document order is streak → weekly… → sync. */
 .today-header {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: var(--s3);
-  align-items: start;
   margin-bottom: var(--s4);
 }
 
@@ -137,6 +139,10 @@ input[type="number"]::-webkit-outer-spin-button {
   border-radius: var(--radius);
   padding: var(--s4);
   box-shadow: inset 0 1px 0 var(--edge);
+}
+
+.training-block {
+  padding: var(--s3) var(--s4);
 }
 
 .streak-number {
@@ -189,7 +195,6 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .sync-status {
-  grid-column: 1 / -1;
   font-size: 13px;
   color: var(--text-dim);
   min-height: 14px;
@@ -478,13 +483,6 @@ input[type="number"]::-webkit-outer-spin-button {
   color: var(--text);
 }
 
-.offday-caption {
-  font-size: 13px;
-  line-height: 1.38;
-  color: var(--text-dim);
-  margin: var(--s1) var(--s1) 0;
-}
-
 /* ---------- Cumulative stats ---------- */
 
 .cumulative-stats {
@@ -525,7 +523,7 @@ input[type="number"]::-webkit-outer-spin-button {
   font-weight: 700;
   line-height: 1.27;
   letter-spacing: -0.5px;
-  margin: var(--s1) 0 var(--s4);
+  margin: var(--s3) 0 20px; /* 20 = on-grid title-to-content rhythm; no token */
 }
 
 .history-grid {
@@ -596,11 +594,23 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .history-legend {
   display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  font-size: 13px;
+  line-height: 1.38;
+  color: var(--text-dim);
+}
+
+.legend-row {
+  display: flex;
   align-items: center;
   gap: var(--s2);
   flex-wrap: wrap;
-  font-size: 13px;
-  color: var(--text-dim);
+}
+
+/* Breathing room between the two marker pairs on the second row. */
+.legend-row .legend-swatch + .legend-label {
+  margin-right: var(--s2);
 }
 
 .legend-swatch {
@@ -695,7 +705,7 @@ input[type="number"]::-webkit-outer-spin-button {
   box-shadow: inset 0 1px 0 var(--edge);
 }
 
-/* iOS grouped-table header idiom (markup lands in Pass 2). */
+/* iOS grouped-table header idiom. */
 .group-title {
   font-size: 13px;
   text-transform: uppercase;
@@ -704,13 +714,19 @@ input[type="number"]::-webkit-outer-spin-button {
   margin-bottom: var(--s2);
 }
 
+/* Inside a flex group the gap already provides the 8px below the header. */
+.settings-group .group-title {
+  margin-bottom: 0;
+}
+
 .settings-group label {
   font-size: 13px;
   color: var(--text-dim);
   margin-top: var(--s2);
 }
 
-.settings-group label:first-child {
+.settings-group label:first-child,
+.settings-group .group-title + label {
   margin-top: 0;
 }
 
@@ -725,13 +741,6 @@ input[type="number"]::-webkit-outer-spin-button {
   color: var(--text);
   padding: 0 var(--s3);
   font-size: 16px; /* iOS zoom floor */
-}
-
-.gh-sync legend {
-  font-size: 15px;
-  font-weight: 600;
-  padding: 0 var(--s1);
-  color: var(--text);
 }
 
 .sync-note, .sync-how {
@@ -815,6 +824,15 @@ input[type="number"]::-webkit-outer-spin-button {
 
 .editor-row-name {
   font-size: 15px;
+}
+
+/* Rows that navigate get a trailing chevron; toggle rows never do. */
+.editor-row-open::after {
+  content: "\203A";
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-faint);
+  margin-left: var(--s2);
 }
 
 .editor-row-tag {
@@ -963,11 +981,26 @@ input[type="number"]::-webkit-outer-spin-button {
 .nav-btn {
   flex: 1;
   min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  padding: var(--s2) 0;
   background: transparent;
   border: none;
   color: var(--text-dim);
   font-size: 13px;
   cursor: pointer;
+}
+
+.nav-btn svg {
+  display: block;
+}
+
+.nav-label {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .nav-btn.active {
