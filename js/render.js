@@ -701,9 +701,11 @@ export function renderSettingsForm(state) {
 
 export const WIZARD_COPING_DEFAULT = "I'll pick it up the next day — no penalty.";
 
-const WIZARD_DONE_COPY =
+const WIZARD_DONE_COPY_FIRST =
   "That's one. Behavior-change research finds two or three small habits tend to stick as well as " +
   'one — sometimes better — as long as each stays small. Want to set up another?';
+const WIZARD_DONE_COPY_SECOND =
+  "That's two. One more still fits — the sweet spot is two or three small habits. Want to set up another?";
 const WIZARD_DONE_COPY_THIRD =
   'Three is a strong start — more than that tends to compete. You can always add more in Settings.';
 
@@ -782,7 +784,13 @@ function renderWizardDone(state) {
 
   const third = w.created >= 3;
   const copyEl = document.getElementById('wizard-done-copy');
-  if (copyEl) copyEl.textContent = third ? WIZARD_DONE_COPY_THIRD : WIZARD_DONE_COPY;
+  if (copyEl) {
+    copyEl.textContent = third
+      ? WIZARD_DONE_COPY_THIRD
+      : w.created === 2
+        ? WIZARD_DONE_COPY_SECOND
+        : WIZARD_DONE_COPY_FIRST;
+  }
 
   const addEl = document.getElementById('wizard-add-another');
   const goEl = document.getElementById('wizard-go-today');
