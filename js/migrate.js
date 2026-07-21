@@ -1,10 +1,14 @@
-// Settings migration: v1 (flat, unversioned) -> v2 (schemaVersion, habits[],
-// coreSlack). Pure, total, and idempotent — see schema-design.md D6.
+// Settings migration: any raw stored blob (unversioned/legacy, corrupt, or
+// v2) -> a fully re-validated v2 shape (schemaVersion, habits[], coreSlack).
+// Pure, total, and idempotent — see schema-design.md D6. There is no v1
+// fabrication path: an unversioned or garbage blob simply gets every known
+// field re-validated in place, and since it has no `habits` key, that comes
+// out as `[]` — the app then routes to the setup wizard rather than
+// reconstructing any particular default set.
 
 import { WEEK_STARTS } from './dates.js';
 import {
   defaultHabits,
-  LEGACY_CORE_HABITS,
   RESERVED_KEYS,
   clampSlack,
   clampWeeklyTarget,
@@ -63,8 +67,10 @@ export function defaultSettings() {
 
 // Fresh install (neither settings nor entries in storage): schema v2 with
 // zero habits and the wizard pending. Deliberately NOT reachable through
-// migrateSettings — only store.js's fresh-install detection calls this, so
-// any legacy blob still takes the v1 fabrication path byte-identically.
+// migrateSettings — only store.js's fresh-install detection calls this;
+// any other stored blob (however old or malformed) goes through
+// migrateSettings/revalidateV2 instead, which also yields zero habits when
+// there's nothing valid to keep, so both paths converge on the wizard.
 export function freshSettings() {
   return { ...defaultSettings(), habits: [], onboarding: 'pending' };
 }
@@ -123,10 +129,9 @@ function validateHabit(h) {
 }
 
 function validateHabitsArray(rawHabits) {
-  if (!Array.isArray(rawHabits)) return defaultHabits();
+  if (!Array.isArray(rawHabits)) return [];
   // An empty array is a legitimate v2 state (fresh install before the wizard
-  // adds anything) and must round-trip — the defaults fallback below is only
-  // for arrays whose every element failed validation.
+  // adds anything) and must round-trip.
   if (rawHabits.length === 0) return [];
   const seen = new Set();
   const out = [];
@@ -137,32 +142,7 @@ function validateHabitsArray(rawHabits) {
       out.push(v);
     }
   }
-  return out.length > 0 ? out : defaultHabits();
-}
-
-// v1 -> v2: build habits[] from the legacy hardcoded set, fold
-// coreThreshold -> coreSlack (against LEGACY_CORE_HABITS.length, not a magic
-// 5 [R11]) and gymTargetPerWeek -> trained.weeklyTarget.
-function migrateFromV1(raw, defaults) {
-  const legacyCoreThreshold = Number.isFinite(raw.coreThreshold) ? raw.coreThreshold : 4;
-  const coreSlack = clampSlack(LEGACY_CORE_HABITS.length - legacyCoreThreshold) ?? 1;
-
-  const defaultTrained = defaults.habits.find((h) => h.id === 'trained');
-  const gymTarget = clampWeeklyTarget(raw.gymTargetPerWeek) ?? defaultTrained.weeklyTarget;
-
-  const habits = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: gymTarget } : h));
-
-  return {
-    ...unknownKeys(raw),
-    schemaVersion: 2,
-    habits,
-    coreSlack,
-    weekStartsOn: ALLOWED_WEEK_STARTS.includes(raw.weekStartsOn) ? raw.weekStartsOn : defaults.weekStartsOn,
-    sleepTargetTime:
-      typeof raw.sleepTargetTime === 'string' && raw.sleepTargetTime ? raw.sleepTargetTime : defaults.sleepTargetTime,
-    holdToComplete: typeof raw.holdToComplete === 'boolean' ? raw.holdToComplete : defaults.holdToComplete,
-    github: validateGithub(raw.github, defaults.github),
-  };
+  return out;
 }
 
 // Already-versioned input: re-validate every field (deepMerge alone lets
@@ -181,8 +161,8 @@ function revalidateV2(raw, defaults) {
     github: validateGithub(raw.github, defaults.github),
   };
   // Setup-wizard flag: 'pending' is the only stored value ('finished' is the
-  // field's absence); anything else drops. v1 blobs never carry it — existing
-  // data means there is nothing to onboard (migrateFromV1 ignores the key).
+  // field's absence); anything else drops. Any raw blob that happens to carry
+  // it round-trips the same way — there is no version-specific suppression.
   if (raw.onboarding === 'pending') settings.onboarding = 'pending';
   return settings;
 }
@@ -196,8 +176,7 @@ export function migrateSettings(raw) {
     return { settings: defaults, migrated: true };
   }
 
-  const isV1 = !Number.isFinite(raw.schemaVersion);
-  const settings = isV1 ? migrateFromV1(raw, defaults) : revalidateV2(raw, defaults);
-  const migrated = isV1 || !deepEqual(settings, raw);
+  const settings = revalidateV2(raw, defaults);
+  const migrated = !deepEqual(settings, raw);
   return { settings, migrated };
 }

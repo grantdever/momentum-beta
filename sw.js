@@ -1,5 +1,5 @@
 // Honest Streaks service worker — minimal versioned cache-first strategy.
-const CACHE = 'honest-streaks-v14';
+const CACHE = 'honest-streaks-v15';
 
 const ASSETS = [
   './',

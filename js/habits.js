@@ -5,28 +5,25 @@
 // `frozen` is reserved for a future scheduled-days cadence, cost-free today.
 export const RESERVED_KEYS = ['date', 'offDay', 'note', 'updatedAt', 'frozen'];
 
-// The 5 daily-core habit ids from v1, in their historic order. Used only by
-// the coreThreshold -> coreSlack migration formula (see migrate.js).
-export const LEGACY_CORE_HABITS = ['alcoholFree', 'cookedAtHome', 'sleptOnTime', 'workSprint', 'walked'];
-
 function openInterval() {
   return [{ from: null, to: null }];
 }
 
-// The 8 legacy habits, each open since the beginning. This is now the single
-// source of truth for ids/labels/cadences (labels used to live in render.js's
-// HABIT_DISPLAY). Returns a fresh deep copy every call so callers can safely
-// mutate the result.
+// A neutral 6-habit default set, all daily-core, each open since the
+// beginning. This is only ever seen through the create screen / editor —
+// fresh installs route to the setup wizard (freshSettings(), zero habits)
+// and never see these — so it exists as a sane populated starting point for
+// non-wizard entry points (e.g. #setup on existing data with no habits yet),
+// not as anyone's personal routine. Returns a fresh deep copy every call so
+// callers can safely mutate the result.
 export function defaultHabits() {
   return [
-    { id: 'trained', label: 'Trained', cadence: 'weekly-quota', weeklyTarget: 3, active: openInterval() },
-    { id: 'alcoholFree', label: 'Alcohol-free', cadence: 'daily-core', active: openInterval() },
-    { id: 'cookedAtHome', label: 'Cooked', cadence: 'daily-core', active: openInterval() },
-    { id: 'sleptOnTime', label: 'Asleep on time', cadence: 'daily-core', active: openInterval() },
-    { id: 'workSprint', label: 'One deep block', cadence: 'daily-core', active: openInterval() },
-    { id: 'walked', label: 'Walked', cadence: 'daily-core', active: openInterval() },
-    { id: 'bonusReading', label: 'Read', cadence: 'bonus', active: openInterval() },
-    { id: 'bonusNoGaming', label: 'No gaming', cadence: 'bonus', active: openInterval() },
+    { id: 'moveBody', label: 'Move your body', cadence: 'daily-core', active: openInterval() },
+    { id: 'windDown', label: 'Wind down before bed', cadence: 'daily-core', active: openInterval() },
+    { id: 'focusedWork', label: 'One focused stretch of work', cadence: 'daily-core', active: openInterval() },
+    { id: 'reachOut', label: 'Reach out to someone', cadence: 'daily-core', active: openInterval() },
+    { id: 'resetSpace', label: 'Reset one small space', cadence: 'daily-core', active: openInterval() },
+    { id: 'drinkWater', label: 'Drink a glass of water', cadence: 'daily-core', active: openInterval() },
   ];
 }
 

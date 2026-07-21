@@ -31,16 +31,6 @@ function weekdayLabels(weekStartsOn) {
   return [...WEEKDAY_LABELS.slice(shift), ...WEEKDAY_LABELS.slice(0, shift)];
 }
 
-function formatTime12h(hhmm) {
-  const parts = String(hhmm || '22:00').split(':');
-  let h = Number(parts[0]);
-  const m = Number(parts[1] || 0);
-  const period = h >= 12 ? 'PM' : 'AM';
-  h = h % 12;
-  if (h === 0) h = 12;
-  return `${h}:${String(m).padStart(2, '0')} ${period}`;
-}
-
 function setPressed(el, pressed) {
   if (el) el.setAttribute('aria-pressed', pressed ? 'true' : 'false');
 }
@@ -162,15 +152,6 @@ function renderStreakBlock(state, todayIso) {
   }
 }
 
-// The sleep habit's row displays the concrete target time rather than its
-// bare label — same behavior the old hardcoded row had.
-function rowLabel(habit, settings) {
-  if (habit.id === 'sleptOnTime') {
-    return `Asleep by ${formatTime12h(settings.sleepTargetTime)} (last night)`;
-  }
-  return habit.label;
-}
-
 function buildGroupLabel(text) {
   const div = document.createElement('div');
   div.className = 'habit-group-label';
@@ -178,7 +159,7 @@ function buildGroupLabel(text) {
   return div;
 }
 
-function buildHabitRow(habit, settings) {
+function buildHabitRow(habit) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = habit.cadence === 'bonus' ? 'habit-row bonus-row' : 'habit-row';
@@ -188,7 +169,7 @@ function buildHabitRow(habit, settings) {
   text.className = 'habit-text';
   const span = document.createElement('span');
   span.className = 'habit-label';
-  span.textContent = rowLabel(habit, settings);
+  span.textContent = habit.label;
   text.appendChild(span);
   // The cue lives where the behavior happens: plan anchor as a faint caption,
   // rendered only when a plan exists — plan-less habits look exactly as before.
@@ -220,9 +201,9 @@ function syncHabitStructure(state, todayIso) {
   const threshold = effectiveThreshold(settings.habits, settings.coreSlack, todayIso);
 
   const sig = JSON.stringify([
-    weekly.map((h) => [h.id, rowLabel(h, settings), h.weeklyTarget, h.plan?.anchor ?? null]),
-    cores.map((h) => [h.id, rowLabel(h, settings), h.plan?.anchor ?? null]),
-    bonus.map((h) => [h.id, rowLabel(h, settings), h.plan?.anchor ?? null]),
+    weekly.map((h) => [h.id, h.label, h.weeklyTarget, h.plan?.anchor ?? null]),
+    cores.map((h) => [h.id, h.label, h.plan?.anchor ?? null]),
+    bonus.map((h) => [h.id, h.label, h.plan?.anchor ?? null]),
     threshold,
   ]);
   if (sig === habitStructureSig) return;
@@ -231,18 +212,18 @@ function syncHabitStructure(state, todayIso) {
   habitList.innerHTML = '';
   for (const habit of weekly) {
     habitList.appendChild(buildGroupLabel(`Weekly — ${habit.weeklyTarget}×`));
-    habitList.appendChild(buildHabitRow(habit, settings));
+    habitList.appendChild(buildHabitRow(habit));
   }
   if (cores.length > 0) {
     habitList.appendChild(buildGroupLabel(`Daily — ${threshold} of ${cores.length}`));
     for (const habit of cores) {
-      habitList.appendChild(buildHabitRow(habit, settings));
+      habitList.appendChild(buildHabitRow(habit));
     }
   }
 
   bonusSection.innerHTML = '';
   for (const habit of bonus) {
-    bonusSection.appendChild(buildHabitRow(habit, settings));
+    bonusSection.appendChild(buildHabitRow(habit));
   }
 }
 
@@ -778,7 +759,7 @@ function renderWizardDone(state) {
   if (previewEl) {
     previewEl.innerHTML = '';
     if (habit) {
-      const row = buildHabitRow(habit, state.settings);
+      const row = buildHabitRow(habit);
       row.disabled = true;
       setPressed(row, !!state.entries[todayISO()]?.[habit.id]);
       previewEl.appendChild(row);

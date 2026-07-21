@@ -16,7 +16,6 @@ import {
 } from '../js/streaks.js';
 import {
   defaultHabits,
-  LEGACY_CORE_HABITS,
   RESERVED_KEYS,
   activeHabitsOn,
   activeCoresOn,
@@ -52,12 +51,27 @@ function t(name, fn) {
   }
 }
 
-// `defaultMigratedConfig` fixture [R12]: the 8 legacy habits (5 daily-core,
-// weekly-quota `trained` at 3, 2 bonus), all open since the beginning, with
-// coreSlack 1 — the exact shape migrateSettings produces from a v1 install.
+// Generic test fixture: the 8 legacy habits (5 daily-core, weekly-quota
+// `trained` at 3, 2 bonus), all open since the beginning, with coreSlack 1.
+// This is historic test scaffolding, NOT production's defaultHabits() (which
+// is now a neutral, generic set never seen by a real fresh install) — the
+// two are deliberately decoupled so this fixture and the ~30 tests built on
+// it stay stable regardless of what production ships as its default set.
 // A fresh copy every call so no test can leak mutation into another.
+const LEGACY_CORE_HABITS = ['alcoholFree', 'cookedAtHome', 'sleptOnTime', 'workSprint', 'walked'];
+
 function freshHabits() {
-  return defaultHabits();
+  const open = () => [{ from: null, to: null }];
+  return [
+    { id: 'trained', label: 'Trained', cadence: 'weekly-quota', weeklyTarget: 3, active: open() },
+    { id: 'alcoholFree', label: 'Alcohol-free', cadence: 'daily-core', active: open() },
+    { id: 'cookedAtHome', label: 'Cooked', cadence: 'daily-core', active: open() },
+    { id: 'sleptOnTime', label: 'Asleep on time', cadence: 'daily-core', active: open() },
+    { id: 'workSprint', label: 'One deep block', cadence: 'daily-core', active: open() },
+    { id: 'walked', label: 'Walked', cadence: 'daily-core', active: open() },
+    { id: 'bonusReading', label: 'Read', cadence: 'bonus', active: open() },
+    { id: 'bonusNoGaming', label: 'No gaming', cadence: 'bonus', active: open() },
+  ];
 }
 const CORE_SLACK = 1; // 5 legacy cores - slack 1 = threshold 4, matching every pre-existing test's `threshold: 4`.
 
@@ -137,19 +151,20 @@ t('weekStart weekday spot-checks (Tue..Sat all map to same Monday)', () => {
 
 // ---------- habits.js: defaults, effective dating, id generation ----------
 
-t('defaultHabits: 8 legacy habits, 5 daily-core, trained weekly x3, all open', () => {
-  const habits = freshHabits();
-  assert.equal(habits.length, 8);
-  const cores = habits.filter((h) => h.cadence === 'daily-core');
-  assert.equal(cores.length, 5);
+t('defaultHabits: neutral 6-habit set, all daily-core, all open', () => {
+  const habits = defaultHabits();
+  assert.equal(habits.length, 6);
+  assert.ok(habits.every((h) => h.cadence === 'daily-core'));
   assert.deepEqual(
-    cores.map((h) => h.id).sort(),
-    [...LEGACY_CORE_HABITS].sort()
+    habits.map((h) => h.id).sort(),
+    ['moveBody', 'windDown', 'focusedWork', 'reachOut', 'resetSpace', 'drinkWater'].sort()
   );
-  const trained = trainedHabit(habits);
-  assert.equal(trained.cadence, 'weekly-quota');
-  assert.equal(trained.weeklyTarget, 3);
   for (const h of habits) assert.deepEqual(h.active, [{ from: null, to: null }]);
+});
+
+t('defaultHabits: contains none of the retired personal habit ids', () => {
+  const personal = ['alcoholFree', 'cookedAtHome', 'sleptOnTime', 'workSprint', 'walked'];
+  assert.ok(defaultHabits().every((h) => !personal.includes(h.id)));
 });
 
 t('activeCoresOn: only currently-active daily-core habits count', () => {
@@ -325,8 +340,8 @@ t('changeHabitType: unknown id is a no-op and the input array is never mutated',
 
 // ---------- migrate.js ----------
 
-t('migrateSettings: v1 fixture migrates to the v2 shape', () => {
-  const v1 = {
+t('migrateSettings: unversioned blob revalidates to v2 with empty habits, no fabrication', () => {
+  const legacy = {
     coreThreshold: 4,
     sleepTargetTime: '23:00',
     gymTargetPerWeek: 4,
@@ -334,28 +349,23 @@ t('migrateSettings: v1 fixture migrates to the v2 shape', () => {
     holdToComplete: true,
     github: { enabled: true, owner: 'someone', repo: 'somewhere', path: 'data.json', token: 'x' },
   };
-  const { settings, migrated } = migrateSettings(v1);
+  const { settings, migrated } = migrateSettings(legacy);
   assert.equal(migrated, true);
   assert.equal(settings.schemaVersion, 2);
-  assert.equal(settings.habits.length, 8);
-  assert.equal(settings.coreSlack, 1); // LEGACY_CORE_HABITS.length(5) - 4
-  assert.equal(trainedHabit(settings.habits).weeklyTarget, 4);
+  assert.deepEqual(settings.habits, []); // no `habits` key on the raw blob -> validateHabitsArray([]) semantics
+  assert.equal(settings.coreSlack, 1); // per-field default, no coreThreshold fold
   assert.equal(settings.weekStartsOn, 'sunday');
   assert.equal(settings.sleepTargetTime, '23:00');
   assert.equal(settings.holdToComplete, true);
-  assert.deepEqual(settings.github, v1.github);
-  for (const h of settings.habits) assert.deepEqual(h.active, [{ from: null, to: null }]);
+  assert.deepEqual(settings.github, legacy.github);
 });
 
-t('migrateSettings: coreSlack formula uses LEGACY_CORE_HABITS.length, not a magic 5 [R11]', () => {
-  const { settings } = migrateSettings({ coreThreshold: 2 });
-  assert.equal(settings.coreSlack, LEGACY_CORE_HABITS.length - 2);
-});
-
-t('migrateSettings: corrupt coreThreshold falls back to its default, never NaN', () => {
-  const { settings } = migrateSettings({ coreThreshold: 'banana' });
-  assert.ok(Number.isFinite(settings.coreSlack));
-  assert.equal(settings.coreSlack, LEGACY_CORE_HABITS.length - 4); // 4 is the v1 default threshold
+t('migrateSettings: unversioned blob with a github token preserves the token, yields empty habits', () => {
+  const { settings } = migrateSettings({
+    github: { enabled: true, owner: 'x', repo: 'y', path: 'data.json', token: 't' },
+  });
+  assert.deepEqual(settings.habits, []);
+  assert.equal(settings.github.token, 't');
 });
 
 t('migrateSettings: idempotent on v2 input', () => {
@@ -396,10 +406,10 @@ t('migrateSettings: v2 input with a corrupt enum field falls back per-field, not
   assert.equal(migrated, true);
 });
 
-t('migrateSettings: v2 input with a garbage habits array falls back to defaults', () => {
+t('migrateSettings: v2 input with a garbage habits array revalidates to empty, not defaults', () => {
   const v2 = { ...defaultSettings(), habits: 'nope' };
   const { settings } = migrateSettings(v2);
-  assert.equal(settings.habits.length, 8);
+  assert.deepEqual(settings.habits, []);
 });
 
 t('migrateSettings: never touches entries (no entries key in its signature or output)', () => {
@@ -938,17 +948,12 @@ t('migrateSettings: negative or fractional coreSlack on v2 input is clamped, not
 });
 
 t('migrateSettings: out-of-range weeklyTarget on v2 habit is clamped to 1-7', () => {
-  const habits = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 99 } : h));
+  const habits = freshHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 99 } : h));
   const { settings } = migrateSettings({ ...defaultSettings(), habits });
   assert.equal(trainedHabit(settings.habits).weeklyTarget, 7);
-  const zeroed = defaultHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 0 } : h));
+  const zeroed = freshHabits().map((h) => (h.id === 'trained' ? { ...h, weeklyTarget: 0 } : h));
   const clampedUp = migrateSettings({ ...defaultSettings(), habits: zeroed });
   assert.equal(trainedHabit(clampedUp.settings.habits).weeklyTarget, 1);
-});
-
-t('migrateSettings: v1 gymTargetPerWeek out of range is clamped on fold-in', () => {
-  const { settings } = migrateSettings({ gymTargetPerWeek: 12 });
-  assert.equal(trainedHabit(settings.habits).weeklyTarget, 7);
 });
 
 t('moveHabit: swaps adjacent habits of the same cadence', () => {
@@ -1102,7 +1107,7 @@ t('historyWeeks: week columns re-bucket under a different start day', () => {
 t('DEFAULT_SETTINGS: v2 shape with sane defaults; holdToComplete off', () => {
   assert.equal(DEFAULT_SETTINGS.schemaVersion, 2);
   assert.equal(DEFAULT_SETTINGS.coreSlack, 1);
-  assert.equal(DEFAULT_SETTINGS.habits.length, 8);
+  assert.equal(DEFAULT_SETTINGS.habits.length, 6);
   assert.equal(DEFAULT_SETTINGS.holdToComplete, false);
   assert.equal(DEFAULT_SETTINGS.github.enabled, false);
 });
@@ -1191,21 +1196,6 @@ t('countUpdated: new days and changed days count; unchanged days do not', () => 
 
 // --- setup wizard: fresh-install detection, onboarding flag, plans ---------
 
-// The exact 8 legacy habit ids in their historic order. The fresh-vs-legacy
-// tests below assert against this list verbatim so that any break in the v1
-// fabrication path (the single most important migration invariant) fails
-// loudly here.
-const LEGACY_8_IDS = [
-  'trained',
-  'alcoholFree',
-  'cookedAtHome',
-  'sleptOnTime',
-  'workSprint',
-  'walked',
-  'bonusReading',
-  'bonusNoGaming',
-];
-
 // store.js touches localStorage only inside its functions, so a stub on
 // globalThis lets the real loadSettings run the detection matrix in node.
 function withLocalStorage(seed, fn) {
@@ -1249,22 +1239,21 @@ t('fresh detection: empty localStorage -> loadSettings yields empty habits + pen
   });
 });
 
-t('fresh detection: v1 settings blob -> legacy fabrication, exact 8 ids, byte-identical habits', () => {
+t('fresh detection: legacy settings blob -> not a fresh install, revalidates to empty habits', () => {
   withLocalStorage({ 'momentum.settings': JSON.stringify({ coreThreshold: 4 }) }, () => {
     assert.equal(isFreshInstall(), false);
     const settings = loadSettings();
-    assert.deepEqual(settings.habits.map((h) => h.id), LEGACY_8_IDS);
-    assert.deepEqual(settings.habits, defaultHabits());
+    assert.deepEqual(settings.habits, []);
     assert.equal('onboarding' in settings, false);
   });
 });
 
-t('fresh detection: entries-only edge -> legacy path, never the wizard', () => {
+t('fresh detection: entries-only edge -> not fresh, revalidates to empty habits, never the wizard', () => {
   const entries = { '2026-07-01': hitEntry('2026-07-01') };
   withLocalStorage({ 'momentum.entries': JSON.stringify(entries) }, () => {
     assert.equal(isFreshInstall(), false);
     const settings = loadSettings();
-    assert.deepEqual(settings.habits.map((h) => h.id), LEGACY_8_IDS);
+    assert.deepEqual(settings.habits, []);
     assert.equal('onboarding' in settings, false);
   });
 });
@@ -1289,12 +1278,6 @@ t('onboarding flag: v2 pending round-trips; garbage values drop the field', () =
   // Cleared flag (field absent) stays absent — finishing the wizard sticks.
   const cleared = migrateSettings(defaultSettings());
   assert.equal('onboarding' in cleared.settings, false);
-});
-
-t('onboarding flag: a v1 blob never keeps it — existing data has nothing to onboard', () => {
-  const { settings } = migrateSettings({ coreThreshold: 4, onboarding: 'pending' });
-  assert.equal('onboarding' in settings, false);
-  assert.deepEqual(settings.habits.map((h) => h.id), LEGACY_8_IDS);
 });
 
 t('validatePlan: trims and caps both fields; coping optional and dropped when empty', () => {
@@ -1415,6 +1398,10 @@ t('no personal data or markers in production files', () => {
     'TO' + 'DO',
     'FIX' + 'ME',
     'HA' + 'CK',
+    'alcohol' + 'Free',
+    'cooked' + 'AtHome',
+    'slept' + 'OnTime',
+    'work' + 'Sprint',
   ];
   for (const f of files) {
     const text = readFileSync(join(root, f), 'utf8');
