@@ -602,6 +602,14 @@ input[type="number"]::-webkit-outer-spin-button {
   border: 1px dashed var(--border);
 }
 
+/* Editable affordance (rolling 7-day window): a faint inset ring layered on
+   top of the intensity background — never replaces it — plus a pointer
+   cursor. Deliberately subtle; no motion. */
+.history-grid .cell.editable {
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 .grid-detail {
   min-height: 18px;
   font-size: 13px;

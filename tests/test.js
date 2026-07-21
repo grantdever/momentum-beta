@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { todayISO, addDays, weekStart } from '../js/dates.js';
+import { todayISO, addDays, weekStart, isEditableDate } from '../js/dates.js';
 import {
   coreCount,
   dailyStreak,
@@ -147,6 +147,31 @@ t('weekStart weekday spot-checks (Tue..Sat all map to same Monday)', () => {
   assert.equal(weekStart('2026-07-09'), '2026-07-06'); // Thu
   assert.equal(weekStart('2026-07-10'), '2026-07-06'); // Fri
   assert.equal(weekStart('2026-07-11'), '2026-07-06'); // Sat
+});
+
+t('isEditableDate: today is editable', () => {
+  const today = '2026-07-21';
+  assert.equal(isEditableDate(today, today), true);
+});
+
+t('isEditableDate: yesterday is editable', () => {
+  const today = '2026-07-21';
+  assert.equal(isEditableDate(addDays(today, -1), today), true);
+});
+
+t('isEditableDate: the -6 boundary (six days prior) is editable', () => {
+  const today = '2026-07-21';
+  assert.equal(isEditableDate(addDays(today, -6), today), true);
+});
+
+t('isEditableDate: seven days prior is NOT editable (outside the window)', () => {
+  const today = '2026-07-21';
+  assert.equal(isEditableDate(addDays(today, -7), today), false);
+});
+
+t('isEditableDate: a future date is NOT editable', () => {
+  const today = '2026-07-21';
+  assert.equal(isEditableDate(addDays(today, 1), today), false);
 });
 
 // ---------- habits.js: defaults, effective dating, id generation ----------

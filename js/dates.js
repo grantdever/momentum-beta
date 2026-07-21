@@ -32,3 +32,10 @@ export function weekStart(iso, weekStartsOn = 'monday') {
   dt.setDate(dt.getDate() - offset);
   return formatLocal(dt);
 }
+
+// A date is editable from History when it falls within the rolling 7-day
+// window ending today: today and the six prior days. Future dates and
+// anything older are read-only. ISO "YYYY-MM-DD" strings compare lexically.
+export function isEditableDate(dateIso, todayIso) {
+  return dateIso <= todayIso && dateIso >= addDays(todayIso, -6);
+}

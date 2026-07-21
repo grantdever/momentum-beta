@@ -2,7 +2,7 @@
 // wiring. This module only reads state and streaks.js and writes to the DOM
 // ids/attributes defined in index.html.
 
-import { todayISO, addDays, weekStart } from './dates.js';
+import { todayISO, addDays, weekStart, isEditableDate } from './dates.js';
 import {
   dailyStreak,
   weeklyQuotaStreak,
@@ -260,10 +260,23 @@ function renderDaySelector(state, todayIso) {
   const selector = document.getElementById('day-selector');
   if (!selector) return;
   const yesterday = addDays(todayIso, -1);
+  // Rebuild the transient chip each render; it exists only for an older date.
+  const existing = selector.querySelector('[data-day-iso]');
+  if (existing) existing.remove();
+  const isPast = state.activeDate < yesterday && isEditableDate(state.activeDate, todayIso);
   for (const btn of selector.querySelectorAll('[data-day-offset]')) {
     const offset = Number(btn.dataset.dayOffset);
     const dateForBtn = offset === 0 ? todayIso : yesterday;
-    setPressed(btn, state.activeDate === dateForBtn);
+    setPressed(btn, !isPast && state.activeDate === dateForBtn);
+  }
+  if (isPast) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'day-btn';
+    chip.dataset.dayIso = state.activeDate;
+    chip.textContent = monthDay(state.activeDate);
+    setPressed(chip, true);
+    selector.appendChild(chip);
   }
 }
 
@@ -366,6 +379,8 @@ export function renderHistory(state) {
       ].filter(Boolean);
       const detail = `${monthDay(cell.date)}: ${parts.join(', ')}`;
       div.dataset.detail = detail;
+      div.dataset.date = cell.date;
+      if (isEditableDate(cell.date, todayIso)) div.classList.add('editable');
       // Surface the day's note so it has a way back out (it only ever went in).
       const note = state.entries[cell.date]?.note?.trim();
       if (note) div.dataset.note = note;

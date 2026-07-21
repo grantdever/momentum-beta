@@ -1,7 +1,7 @@
 // Bootstrap and event wiring for Honest Streaks. localStorage is the source of
 // truth for the working session; GitHub sync (if enabled) layers on top.
 
-import { todayISO, addDays, WEEK_STARTS } from './dates.js';
+import { todayISO, addDays, WEEK_STARTS, isEditableDate } from './dates.js';
 import {
   loadEntries,
   saveEntries,
@@ -335,10 +335,14 @@ function init() {
   });
 
   document.getElementById('day-selector').addEventListener('click', (e) => {
-    const btn = e.target.closest('[data-day-offset]');
+    const btn = e.target.closest('[data-day-offset], [data-day-iso]');
     if (!btn) return;
-    const offset = Number(btn.dataset.dayOffset);
-    state.activeDate = offset === 0 ? todayISO() : addDays(todayISO(), offset);
+    if (btn.dataset.dayIso) {
+      state.activeDate = btn.dataset.dayIso;
+    } else {
+      const offset = Number(btn.dataset.dayOffset);
+      state.activeDate = offset === 0 ? todayISO() : addDays(todayISO(), offset);
+    }
     renderAll(state);
   });
 
@@ -397,6 +401,14 @@ function init() {
   document.getElementById('history-grid').addEventListener('click', (e) => {
     const cell = e.target.closest('[data-detail]');
     if (!cell) return;
+    const date = cell.dataset.date;
+    if (date && isEditableDate(date, todayISO())) {
+      state.activeDate = date;
+      showView('today');
+      renderAll(state);
+      return;
+    }
+    // Older / read-only cell: reveal detail + note (feature #4), unchanged.
     const detailEl = document.getElementById('grid-detail');
     if (!detailEl) return;
     detailEl.textContent = '';
